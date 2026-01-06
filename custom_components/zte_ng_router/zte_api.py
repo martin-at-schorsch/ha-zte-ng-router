@@ -50,6 +50,23 @@ class ZteRouterApi:
         import hashlib
         return hashlib.sha256(text.encode("utf-8")).hexdigest().upper()
 
+    @staticmethod
+    def _is_conn_reset_104(exc: BaseException) -> bool:
+        """Return True if exception chain contains ConnectionResetError errno 104."""
+        seen: set[int] = set()
+        cur: BaseException | None = exc
+
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+
+            if isinstance(cur, ConnectionResetError) and getattr(cur, "errno", None) == 104:
+                return True
+
+            # Walk the exception chain (requests -> urllib3 -> socket error)
+            cur = cur.__cause__ or cur.__context__
+
+        return False
+
     # --------------------------------------------------------------------
     # Band helpers (simplified)
     # --------------------------------------------------------------------
@@ -218,6 +235,7 @@ class ZteRouterApi:
         call: dict,
         session_id: Optional[str] = None,
         retry_on_access_denied: bool = True,
+        retry_on_connreset_104: bool = True,
     ) -> dict:
         """Call ubus. If access denied (-32002), try a re-login and retry once."""
 
@@ -249,6 +267,29 @@ class ZteRouterApi:
             resp.raise_for_status()
         except Exception as exc:
             _LOGGER.warning("HTTP error while calling ubus: %s", exc)
+
+            # Only handle TCP reset-by-peer (errno 104) with a re-login + single retry
+            if retry_on_connreset_104 and self._is_conn_reset_104(exc):
+                _LOGGER.warning("Connection reset by peer (104), attempting re-login")
+
+                self._logged_in = False
+                self._session_id = None
+
+                try:
+                    self.init_session()
+                    self.login()
+                except Exception as exc2:
+                    _LOGGER.error("Re-login failed after 104: %s", exc2)
+                    return {"success": False, "data": None}
+
+                # Retry once with new session (avoid loops)
+                return self.call_ubus(
+                    call,
+                    self._session_id,
+                    retry_on_access_denied=retry_on_access_denied,
+                    retry_on_connreset_104=False,
+                )
+
             return {"success": False, "data": None}
 
         try:
@@ -280,7 +321,7 @@ class ZteRouterApi:
                     return {"success": False, "data": None}
 
                 # Retry once with new session
-                return self.call_ubus(call, self._session_id, retry_on_access_denied=False)
+                return self.call_ubus(call, self._session_id, retry_on_access_denied=False, retry_on_connreset_104=retry_on_connreset_104)
 
             return {"success": False, "data": None}
 
