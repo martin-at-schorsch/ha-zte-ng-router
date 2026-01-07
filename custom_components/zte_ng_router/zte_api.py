@@ -1,27 +1,37 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
-import requests
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from aiohttp import ClientError
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class ZteRouterApi:
-    """Low-level API wrapper for ZTE 5G routers (e.g. G5TC)."""
+    """Async low-level API wrapper for ZTE 5G routers (e.g. G5TC)."""
 
-    def __init__(self, base_url: str, password: str, router_type: str, verify_tls: bool) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        base_url: str,
+        password: str,
+        router_type: str,
+        verify_tls: bool,
+    ) -> None:
         # base_url like "http://192.168.254.1" or "https://192.168.254.1"
+        self.hass = hass
         self.base_url = base_url.rstrip("/")
         self.password = password
         self.router_type = router_type
         self.verify_tls = verify_tls
 
-        self.session = requests.Session()
-        self.session.verify = self.verify_tls
+        # Use Home Assistant managed aiohttp session.
+        # verify_ssl=False allows self-signed certificates.
+        self._session = async_get_clientsession(hass, verify_ssl=verify_tls)
 
         self._session_id: Optional[str] = None
         self._logged_in: bool = False
@@ -48,11 +58,12 @@ class ZteRouterApi:
     @staticmethod
     def sha256(text: str) -> str:
         import hashlib
+
         return hashlib.sha256(text.encode("utf-8")).hexdigest().upper()
 
     @staticmethod
     def _is_conn_reset_104(exc: BaseException) -> bool:
-        """Return True if exception chain contains ConnectionResetError errno 104."""
+        """Return True if exception chain contains errno 104 (Connection reset by peer)."""
         seen: set[int] = set()
         cur: BaseException | None = exc
 
@@ -61,8 +72,9 @@ class ZteRouterApi:
 
             if isinstance(cur, ConnectionResetError) and getattr(cur, "errno", None) == 104:
                 return True
+            if isinstance(cur, OSError) and getattr(cur, "errno", None) == 104:
+                return True
 
-            # Walk the exception chain (requests -> urllib3 -> socket error)
             cur = cur.__cause__ or cur.__context__
 
         return False
@@ -161,38 +173,31 @@ class ZteRouterApi:
             total_bw += nr_bw
 
         bands_summary = " + ".join(bands) if bands else "-"
-
         return bands_summary, total_bw
 
     # --------------------------------------------------------------------
     # Authentication
     # --------------------------------------------------------------------
-    def init_session(self) -> None:
-        """Re-create requests.Session and fetch the start page to get cookies/CSRF."""
-        self.session = requests.Session()
-        self.session.verify = self.verify_tls
-
+    async def async_init_session(self) -> None:
+        """Fetch the start page to get cookies/CSRF (if any)."""
         url = self.base_url + "/"
         try:
-            resp = self.session.get(url, timeout=10)
-            _LOGGER.debug(
-                "init_session: status=%s cookies=%s",
-                resp.status_code,
-                self.session.cookies.get_dict(),
-            )
-        except Exception as exc:
-            _LOGGER.warning("init_session GET %s failed: %s", url, exc)
+            async with self._session.get(url, timeout=10) as resp:
+                await resp.read()
+                _LOGGER.debug("async_init_session: status=%s", resp.status)
+        except (ClientError, asyncio.TimeoutError, OSError) as exc:
+            _LOGGER.warning("async_init_session GET %s failed: %s", url, exc)
 
-    def login(self) -> None:
-        """Perform normal web_login to ZTE router and store ubus session ID."""
+    async def async_login(self) -> None:
+        """Perform web_login to ZTE router and store ubus session ID."""
 
-        # 1) Salt holen
+        # 1) get salt
         salt_req = {
             "service": "zwrt_web",
             "method": "web_login_info",
             "params": {},
         }
-        salt_res = self.call_ubus(
+        salt_res = await self.async_call_ubus(
             salt_req,
             session_id="0" * 32,
             retry_on_access_denied=False,
@@ -203,17 +208,17 @@ class ZteRouterApi:
         if not salt:
             raise RuntimeError("Could not retrieve login salt")
 
-        # 2) finaler Hash = SHA256(SHA256(password) + salt)
+        # 2) final hash = SHA256(SHA256(password) + salt)
         pw_hash = self.sha256(self.password)
         final = self.sha256(pw_hash + salt)
 
-        # 3) Login
+        # 3) login
         login_req = {
             "service": "zwrt_web",
             "method": "web_login",
             "params": {"password": final},
         }
-        login_res = self.call_ubus(
+        login_res = await self.async_call_ubus(
             login_req,
             session_id="0" * 32,
             retry_on_access_denied=False,
@@ -230,7 +235,7 @@ class ZteRouterApi:
     # --------------------------------------------------------------------
     # ubus caller with automatic re-login on -32002
     # --------------------------------------------------------------------
-    def call_ubus(
+    async def async_call_ubus(
         self,
         call: dict,
         session_id: Optional[str] = None,
@@ -258,17 +263,18 @@ class ZteRouterApi:
 
         url = self._ubus_url()
         try:
-            resp = self.session.post(
+            async with self._session.post(
                 url,
                 json=req,
                 headers=self._base_headers,
                 timeout=10,
-            )
-            resp.raise_for_status()
+            ) as resp:
+                resp.raise_for_status()
+                res_list = await resp.json(content_type=None)
         except Exception as exc:
             _LOGGER.warning("HTTP error while calling ubus: %s", exc)
 
-            # Only handle TCP reset-by-peer (errno 104) with a re-login + single retry
+            # Handle TCP reset-by-peer (errno 104) with a re-login + single retry
             if retry_on_connreset_104 and self._is_conn_reset_104(exc):
                 _LOGGER.warning("Connection reset by peer (104), attempting re-login")
 
@@ -276,14 +282,13 @@ class ZteRouterApi:
                 self._session_id = None
 
                 try:
-                    self.init_session()
-                    self.login()
+                    await self.async_init_session()
+                    await self.async_login()
                 except Exception as exc2:
                     _LOGGER.error("Re-login failed after 104: %s", exc2)
                     return {"success": False, "data": None}
 
-                # Retry once with new session (avoid loops)
-                return self.call_ubus(
+                return await self.async_call_ubus(
                     call,
                     self._session_id,
                     retry_on_access_denied=retry_on_access_denied,
@@ -292,12 +297,11 @@ class ZteRouterApi:
 
             return {"success": False, "data": None}
 
-        try:
-            res_list = resp.json()
-            res0 = res_list[0]
-        except Exception:
+        if not isinstance(res_list, list) or not res_list:
             _LOGGER.warning("Invalid JSON from ubus")
             return {"success": False, "data": None}
+
+        res0 = res_list[0]
 
         # Error case
         if "error" in res0:
@@ -314,14 +318,18 @@ class ZteRouterApi:
                 self._session_id = None
 
                 try:
-                    self.init_session()
-                    self.login()
+                    await self.async_init_session()
+                    await self.async_login()
                 except Exception as exc:
                     _LOGGER.error("Re-login failed: %s", exc)
                     return {"success": False, "data": None}
 
-                # Retry once with new session
-                return self.call_ubus(call, self._session_id, retry_on_access_denied=False, retry_on_connreset_104=retry_on_connreset_104)
+                return await self.async_call_ubus(
+                    call,
+                    self._session_id,
+                    retry_on_access_denied=False,
+                    retry_on_connreset_104=retry_on_access_denied,
+                )
 
             return {"success": False, "data": None}
 
@@ -335,23 +343,23 @@ class ZteRouterApi:
     # --------------------------------------------------------------------
     # Public API used by the HA DataUpdateCoordinator
     # --------------------------------------------------------------------
-    def update_all(self) -> Dict[str, Any]:
+    async def async_update_all(self) -> dict[str, Any]:
         """Fetch all relevant router data for Home Assistant in one go."""
 
         if not self._logged_in:
-            self.init_session()
-            self.login()
+            await self.async_init_session()
+            await self.async_login()
 
-        netinfo_res = self.call_ubus(
+        netinfo_res = await self.async_call_ubus(
             {"service": "zte_nwinfo_api", "method": "nwinfo_get_netinfo"}
         )
-        temp_res = self.call_ubus(
+        temp_res = await self.async_call_ubus(
             {"service": "zwrt_bsp.thermal", "method": "get_cpu_temp"}
         )
-        dev_res = self.call_ubus(
+        dev_res = await self.async_call_ubus(
             {"service": "zwrt_mc.device.manager", "method": "get_device_info"}
         )
-        wan_res = self.call_ubus(
+        wan_res = await self.async_call_ubus(
             {"service": "zwrt_router.api", "method": "router_get_status"}
         )
 
