@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from homeassistant.const import CONF_HOST, CONF_PASSWORD
 
@@ -57,6 +58,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     api = ZteRouterApi(
+        hass=hass,
+        session=async_get_clientsession(hass, verify_ssl=verify_tls),
         base_url=host,
         password=password,
         router_type=router_type,
