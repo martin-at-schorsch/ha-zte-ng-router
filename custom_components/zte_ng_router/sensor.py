@@ -26,6 +26,20 @@ SENSOR_DEFS = [
     ("network_provider", "Network Provider", None, None, None),
     ("connection_type", "Connection Type", None, None, None),
 
+    # Wi-Fi (public zwrt_wlan/report)
+    ("wifi_onoff", "WiFi Enabled", None, None, None),
+    ("main2g_ssid", "WiFi 2.4 GHz SSID", None, None, None),
+    ("main5g_ssid", "WiFi 5 GHz SSID", None, None, None),
+
+    # Net identifiers / locks
+    ("signalbar", "Signal Bars", None, None, None),
+    ("rmcc", "RMCC", None, None, None),
+    ("rmnc", "RMNC", None, None, None),
+    ("nr5g_cell_id", "NR5G Cell ID", None, None, None),
+    ("lac_code", "LAC Code", None, None, None),
+    ("lte_band_lock", "LTE Band Lock", None, None, None),
+    ("gw_band_lock", "GW Band Lock", None, None, None),
+
     # Bands and total bandwidth
     ("bands_summary", "Bands", None, None, None),
     ("total_bandwidth", "Total Bandwidth", None, "MHz", SensorStateClass.MEASUREMENT),
@@ -51,6 +65,10 @@ SENSOR_DEFS = [
 
     # WAN / system
     ("wan_ipv4", "WAN IPv4", None, None, None),
+    ("wan_ipv6", "WAN IPv6", None, None, None),
+    ("wan_status", "WAN Status", None, None, None),
+    ("hardware_version", "Hardware Version", None, None, None),
+    ("wa_inner_version", "WA Inner Version", None, None, None),
     ("cpu_temp", "CPU Temperature", SensorDeviceClass.TEMPERATURE,
      UnitOfTemperature.CELSIUS, SensorStateClass.MEASUREMENT),
     # Uptime in seconds – Home Assistant can convert/display as hours/days
@@ -83,9 +101,11 @@ def _as_number(value: Any) -> Any:
 def _extract_value(data: dict[str, Any], key: str) -> Any:
     """Map a logical key to a value inside the aggregated API data."""
     netinfo = data.get("netinfo") or {}
+    wlan = data.get("wlan") or {}
     thermal = data.get("thermal") or {}
     device = data.get("device") or {}
     wan = data.get("wan") or {}
+    common_config = data.get("common_config") or {}
 
     # General
     if key == "network_provider":
@@ -99,12 +119,59 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
             return "5G NSA"
         return nt
 
+    # Wi-Fi (from zwrt_wlan/report)
+    if key == "wifi_onoff":
+        v = wlan.get("wifi_onoff")
+        if v is None:
+            return None
+        # Router returns "0"/"1" strings
+        return str(v) == "1"
+
+    if key == "main2g_ssid":
+        return wlan.get("main2g_ssid")
+
+    if key == "main5g_ssid":
+        return wlan.get("main5g_ssid")
+
+    # Net identifiers / locks (from netinfo)
+    if key == "signalbar":
+        v = _as_number(netinfo.get("signalbar"))
+        return None if v is None else int(v)
+
+    if key == "rmcc":
+        v = netinfo.get("rmcc")
+        return None if v in (None, "", "-") else str(v)
+
+    if key == "rmnc":
+        v = netinfo.get("rmnc")
+        return None if v in (None, "", "-") else str(v)
+
+    if key == "nr5g_cell_id":
+        v = netinfo.get("nr5g_cell_id")
+        return None if v in (None, "", "-") else str(v)
+
+    if key == "lac_code":
+        v = netinfo.get("lac_code")
+        return None if v in (None, "", "-") else str(v)
+
+    if key == "lte_band_lock":
+        return netinfo.get("lte_band_lock")
+
+    if key == "gw_band_lock":
+        return netinfo.get("gw_band_lock")
+
     # Bands & total bandwidth (derived in zte_api.update_all)
     if key == "bands_summary":
-        return data.get("bands_summary")
+        v = data.get("bands_summary")
+        if not v or v == "-":
+            return None
+        return v
 
     if key == "total_bandwidth":
-        return _as_number(data.get("total_bw_mhz"))
+        v = _as_number(data.get("total_bw_mhz"))
+        if v is None or v <= 0:
+            return None
+        return int(v)
 
     if key == "primary_rsrp":
         # Prefer LTE RSRP, fall back to NR RSRP
@@ -139,9 +206,21 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
     if key == "nr_rssi":
         return _as_number(netinfo.get("nr5g_rssi"))
 
-    # WAN / system (string / numeric mixed)
+    # WAN / system
     if key == "wan_ipv4":
         return wan.get("mwan_wanlan1_wan_ipaddr")
+
+    if key == "wan_ipv6":
+        return wan.get("mwan_wanlan1_ipv6_wan_ipaddr")
+
+    if key == "wan_status":
+        return wan.get("mwan_wanlan1_status") or wan.get("current_wan_status")
+
+    if key == "hardware_version":
+        return common_config.get("hardware_version")
+
+    if key == "wa_inner_version":
+        return common_config.get("wa_inner_version")
 
     if key == "cpu_temp":
         return _as_number(thermal.get("cpuss_temp"))
