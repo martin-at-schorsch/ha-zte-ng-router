@@ -1,51 +1,41 @@
 # ZTE NG Router – Home Assistant Custom Integration
 
-Custom integration for Home Assistant to monitor and control recent ZTE “NG” routers (5G/FWA and similar CPEs) via their HTTP API.
+Custom Home Assistant integration to monitor and control **modern ZTE “NG” 5G/FWA routers** via their **local HTTP API**.
 
-It exposes key connection metrics as sensors and (optionally) control functions as services/switches, so you can use your router in dashboards and automations.
+The integration exposes key radio, network, and traffic metrics as Home Assistant entities and, where supported, provides basic control functions for use in dashboards and automations.
 
-> ⚠️ This is an early version. Entity names and supported features may still change between releases.
 
----
+## Supported ZTE Router Models
+
+This integration targets **recent ZTE NG router platforms** with a shared firmware and API structure.
+
+### Supported models
+- **ZTE G5TC** – 5G FWA / Indoor CPE  
+- **ZTE G5TS** – 5G Indoor CPE (Wi-Fi 6)  
+- **ZTE G5C**  
+- **ZTE G5 Max**  
+- **ZTE G5 Ultra**
+
+> ⚠️ Support depends on **firmware version and operator customizations**. ISP-branded devices may restrict or disable parts of the local HTTP API.
+
+If you successfully use this integration with a listed model and specific firmware, consider contributing that information via an issue or pull request.
+
+
 
 ## Features
 
-Typical capabilities include (depending on router model/firmware):
+Feature availability depends on router model and firmware.
 
 - Connection status and uptime  
-- WAN information  
-  - External IP address  
-  - Connection type (4G/5G/NR, etc.)  
-  - Signal quality indicators (RSRP/RSRQ/SINR/PCI, bands, etc.)  
-- Traffic and usage  
-  - Total upload/download  
-  - Current throughput  
-- Device information  
-  - Router model and firmware version  
-  - IMEI/ICCID (where available)  
-- Optional controls (if supported by your model)  
-  - Reboot router  
-  - Toggle mobile data  
-  - Other actions exposed as services
+- Access technology (4G / 5G / NR)  
+- Radio signal metrics (RSRP, RSRQ, SINR, PCI, bands)  
+- WAN / external IP information  
+- Traffic counters and current throughput  
+- Device information (model, firmware, IMEI/ICCID where available)  
+- Optional controls (e.g. reboot, mobile data on/off)
 
-Check your Home Assistant instance after setup to see the exact list of entities created for your router.
-
----
+If a feature is missing, please open an issue to report it.
 
 ## Requirements
 
-- Home Assistant 2024.XX or newer  
-- A supported ZTE router reachable from your Home Assistant instance  
-  - Router web UI/API enabled and not blocked by your firewall  
 - Local network connectivity between Home Assistant and the router IP
-
----
-
-## Installation
-
-### 1. Manual installation
-
-1. In your Home Assistant configuration directory, create the folder (if it does not yet exist):
-
-   ```text
-   custom_components
