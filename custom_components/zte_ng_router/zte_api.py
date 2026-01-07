@@ -4,7 +4,8 @@ import asyncio
 import logging
 from typing import Any, Optional
 
-from aiohttp import ClientError
+import aiohttp
+from aiohttp import ClientError, ClientSession
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -16,11 +17,12 @@ class ZteRouterApi:
 
     def __init__(
         self,
-        hass: HomeAssistant,
-        base_url: str,
-        password: str,
-        router_type: str,
-        verify_tls: bool,
+        hass: HomeAssistant | None = None,
+        base_url: str = "",
+        password: str = "",
+        router_type: str = "",
+        verify_tls: bool = True,
+        session: ClientSession | None = None,
     ) -> None:
         # base_url like "http://192.168.254.1" or "https://192.168.254.1"
         self.hass = hass
@@ -29,9 +31,19 @@ class ZteRouterApi:
         self.router_type = router_type
         self.verify_tls = verify_tls
 
-        # Use Home Assistant managed aiohttp session.
-        # verify_ssl=False allows self-signed certificates.
-        self._session = async_get_clientsession(hass, verify_ssl=verify_tls)
+        # Use Home Assistant managed aiohttp session when hass is available.
+        # If hass is not provided (e.g. due to an integration bug), fall back to a standalone session.
+        if session is not None:
+            self._session = session
+        elif hass is not None:
+            # verify_tls=False allows self-signed certificates.
+            self._session = async_get_clientsession(hass, verify_ssl=verify_tls)
+        else:
+            _LOGGER.warning(
+                "ZteRouterApi initialized without hass; falling back to a standalone aiohttp session"
+            )
+            connector = aiohttp.TCPConnector(ssl=verify_tls)
+            self._session = aiohttp.ClientSession(connector=connector)
 
         self._session_id: Optional[str] = None
         self._logged_in: bool = False
