@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+import homeassistant.helpers.config_validation as cv
 
 from homeassistant.const import CONF_HOST, CONF_PASSWORD
 
