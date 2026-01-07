@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 from typing import Any, Optional
 
 import aiohttp
@@ -49,7 +50,6 @@ class ZteRouterApi:
         self._logged_in: bool = False
 
         self._auth_lock = asyncio.Lock()
-        self._last_login_monotonic: float | None = None
 
         # Headers similar to the JS script environment
         self._base_headers = {
@@ -184,7 +184,7 @@ class ZteRouterApi:
         if nr_arfcn is not None and nr_bw is not None and nr_bw > 0:
             b = self._convert_nr_arfcn_to_band(nr_arfcn)
             if b is not None:
-                bands.append(f"N{b}")
+                bands.append(f"n{b}")
             total_bw += nr_bw
 
         bands_summary = " + ".join(bands) if bands else "-"
@@ -258,7 +258,6 @@ class ZteRouterApi:
 
             await self.async_init_session()
             await self.async_login()
-            self._last_login_monotonic = asyncio.get_running_loop().time()
 
     # --------------------------------------------------------------------
     # ubus caller with automatic re-login on -32002
@@ -267,12 +266,16 @@ class ZteRouterApi:
         self,
         call: dict,
         session_id: Optional[str] = None,
+        *,
         retry_on_access_denied: bool = True,
         retry_on_connreset_104: bool = True,
     ) -> dict:
         """Call ubus. If access denied (-32002), try a re-login and retry once."""
 
         if session_id is None:
+            # Lazily login only when we actually need an authenticated call.
+            if not self._session_id or not self._logged_in:
+                await self._async_ensure_logged_in()
             session_id = self._session_id
 
         req = [
@@ -281,7 +284,7 @@ class ZteRouterApi:
                 "id": 0,
                 "method": "call",
                 "params": [
-                    session_id or "0" * 32,
+                    session_id,
                     call["service"],
                     call["method"],
                     call.get("params", {}) or {},
@@ -291,10 +294,25 @@ class ZteRouterApi:
 
         url = self._ubus_url()
         try:
+            try:
+                sid_preview = (session_id or "")[:8]
+            except Exception:
+                sid_preview = ""
+            _LOGGER.debug(
+                "ubus call: service=%s method=%s sid=%s",
+                call.get("service"),
+                call.get("method"),
+                sid_preview,
+            )
+            headers = dict(self._base_headers)
+            if call.get("service") == "uci":
+                headers["Z-Tag"] = (call.get("params") or {}).get("config", "")
+            else:
+                headers["Z-Tag"] = call.get("method", "")
             async with self._session.post(
                 url,
                 json=req,
-                headers=self._base_headers,
+                headers=headers,
                 timeout=10,
             ) as resp:
                 resp.raise_for_status()
@@ -302,7 +320,7 @@ class ZteRouterApi:
         except Exception as exc:
             _LOGGER.warning("HTTP error while calling ubus: %s", exc)
 
-            # Handle TCP reset-by-peer (errno 104) with a re-login + single retry
+            # Handle TCP reset-by-peer (errno 104) with a single retry
             if retry_on_connreset_104 and self._is_conn_reset_104(exc):
                 _LOGGER.warning("Connection reset by peer (104), attempting re-login")
 
@@ -317,7 +335,7 @@ class ZteRouterApi:
 
                 return await self.async_call_ubus(
                     call,
-                    self._session_id,
+                    session_id=None,
                     retry_on_access_denied=retry_on_access_denied,
                     retry_on_connreset_104=False,
                 )
@@ -330,6 +348,13 @@ class ZteRouterApi:
 
         res0 = res_list[0]
 
+        _LOGGER.debug(
+            "ubus response: service=%s method=%s has_error=%s",
+            call.get("service"),
+            call.get("method"),
+            "error" in res0,
+        )
+
         # Error case
         if "error" in res0:
             err = res0["error"]
@@ -338,7 +363,13 @@ class ZteRouterApi:
 
             # Access denied → re-login (expected on some firmwares when session expires)
             if code == -32002 and retry_on_access_denied:
-                _LOGGER.debug("ubus access denied (code=%s msg=%s), attempting re-login", code, msg)
+                _LOGGER.debug(
+                    "ubus access denied: service=%s method=%s code=%s msg=%s; attempting re-login",
+                    call.get("service"),
+                    call.get("method"),
+                    code,
+                    msg,
+                )
 
                 # Mark current session as invalid and perform a single forced re-login.
                 self._logged_in = False
@@ -352,13 +383,29 @@ class ZteRouterApi:
 
                 return await self.async_call_ubus(
                     call,
-                    self._session_id,
+                    session_id=None,
                     retry_on_access_denied=False,
-                    retry_on_connreset_104=retry_on_access_denied,
+                    retry_on_connreset_104=retry_on_connreset_104,
                 )
 
             # Non-retryable error (or retry disabled)
-            _LOGGER.warning("ubus error: code=%s msg=%s", code, msg)
+            if code == -32002:
+                # Avoid log spam: this can happen even after a re-login attempt on some firmwares.
+                _LOGGER.debug(
+                    "ubus access denied: service=%s method=%s code=%s msg=%s (no further retry)",
+                    call.get("service"),
+                    call.get("method"),
+                    code,
+                    msg,
+                )
+            else:
+                _LOGGER.warning(
+                    "ubus error: service=%s method=%s code=%s msg=%s",
+                    call.get("service"),
+                    call.get("method"),
+                    code,
+                    msg,
+                )
             return {"success": False, "data": None}
 
         # Normal result
@@ -368,35 +415,244 @@ class ZteRouterApi:
 
         return {"success": False, "data": None}
 
+
+    async def async_call_ubus_batch(
+        self,
+        calls: list[dict[str, Any]],
+        *,
+        retry_on_connreset_104: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Send multiple ubus calls in a single JSON-RPC batch request.
+
+        Returns a list of per-call results in the same order as `calls`, each item:
+          {"success": bool, "data": Any, "error": Optional[dict]}
+
+        Note: all calls in a batch share the same ubus session id.
+        """
+
+        if not self._session_id or not self._logged_in:
+            await self._async_ensure_logged_in()
+        session_id = self._session_id
+
+        # Build JSON-RPC batch
+        req: list[dict[str, Any]] = []
+        id_to_index: dict[int, int] = {}
+        for idx, call in enumerate(calls):
+            rpc_id = idx
+            id_to_index[rpc_id] = idx
+            req.append(
+                {
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "method": "call",
+                    "params": [
+                        session_id,
+                        call["service"],
+                        call["method"],
+                        call.get("params", {}) or {},
+                    ],
+                }
+            )
+
+        url = self._ubus_url()
+        try:
+            sid_preview = (session_id or "")[:8]
+            _LOGGER.debug(
+                "ubus batch call: n=%s sid=%s", len(req), sid_preview
+            )
+            headers = dict(self._base_headers)
+            first_call = calls[0] if calls else {}
+            if first_call.get("service") == "uci":
+                headers["Z-Tag"] = (first_call.get("params") or {}).get("config", "")
+            else:
+                headers["Z-Tag"] = first_call.get("method", "")
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                try:
+                    _LOGGER.debug("ubus batch request headers: %s", {"Z-Tag": headers.get("Z-Tag")})
+                    _LOGGER.debug("ubus batch request payload: %s", json.dumps(req))
+                except Exception:
+                    pass
+            async with self._session.post(
+                url,
+                json=req,
+                headers=headers,
+                timeout=10,
+            ) as resp:
+                resp.raise_for_status()
+                raw_text = await resp.text()
+                _LOGGER.debug("ubus batch raw response: %s", raw_text)
+                res_list = json.loads(raw_text)
+        except Exception as exc:
+            _LOGGER.warning("HTTP error while calling ubus batch: %s", exc)
+
+            # Handle TCP reset-by-peer (errno 104) with a single retry
+            if retry_on_connreset_104 and self._is_conn_reset_104(exc):
+                _LOGGER.warning("Connection reset by peer (104) during batch, attempting re-login")
+                self._logged_in = False
+                self._session_id = None
+                try:
+                    await self._async_ensure_logged_in(force=True)
+                except Exception as exc2:
+                    _LOGGER.error("Re-login failed after 104 during batch: %s", exc2)
+                    return [{"success": False, "data": None, "error": {"message": str(exc2)}} for _ in calls]
+                return await self.async_call_ubus_batch(
+                    calls,
+                    retry_on_connreset_104=False,
+                )
+
+            return [{"success": False, "data": None, "error": {"message": str(exc)}} for _ in calls]
+
+        if not isinstance(res_list, list):
+            _LOGGER.warning("Invalid JSON from ubus batch")
+            return [{"success": False, "data": None, "error": {"message": "invalid_json"}} for _ in calls]
+
+        # Prepare output list
+        out: list[dict[str, Any]] = [{"success": False, "data": None, "error": None} for _ in calls]
+
+        for item in res_list:
+            if not isinstance(item, dict):
+                continue
+            rpc_id = item.get("id")
+            if rpc_id not in id_to_index:
+                continue
+            idx = id_to_index[rpc_id]
+
+            if "error" in item:
+                out[idx] = {"success": False, "data": None, "error": item.get("error")}
+                continue
+
+            result = item.get("result") or []
+            if result and result[0] == 0:
+                out[idx] = {"success": True, "data": result[1], "error": None}
+            else:
+                out[idx] = {"success": False, "data": None, "error": {"message": "nonzero_result"}}
+
+        return out
+    
+    def build_ubus_call(
+        self,
+        service: str,
+        method: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build a ubus call dict in the format expected by `async_call_ubus`."""
+        return {
+            "service": service,
+            "method": method,
+            "params": params or {},
+        }
+
+
+    async def async_execute_ubus_action(
+        self,
+        call: dict[str, Any],
+        *,
+        success_key: str | None = None,
+        success_values: set[str] | None = None,
+    ) -> bool:
+        """Execute an action-style ubus call and return True if it succeeded.
+
+        Intended for HA Buttons/Services (reboot, poweroff, factory reset, start update, etc.).
+
+        If `success_key` is provided, we additionally check the returned payload
+        (e.g. {"result": "success"}).
+        """
+        res = await self.async_call_ubus(call)
+        if not res.get("success"):
+            return False
+
+        if success_key is None:
+            return True
+
+        data = res.get("data") or {}
+        v = data.get(success_key)
+        if v is None:
+            return False
+
+        if success_values is None:
+            return bool(v)
+
+        return str(v) in success_values
+
+
+    async def async_execute_action_def(self, action: dict[str, Any]) -> bool:
+        """Execute an action definition.
+
+        Expected shape:
+        {
+            "service": "...",
+            "method": "...",
+            "params": {...},               # optional
+            "success_key": "result",       # optional
+            "success_values": ["success"]  # optional (list/tuple/set)
+        }
+        """
+        service = action.get("service")
+        method = action.get("method")
+        if not service or not method:
+            _LOGGER.warning("Invalid action definition (missing service/method): %s", action)
+            return False
+
+        params = action.get("params")
+        if params is not None and not isinstance(params, dict):
+            _LOGGER.warning("Invalid action definition (params must be dict): %s", action)
+            return False
+
+        call = self.build_ubus_call(service, method, params)
+
+        success_key = action.get("success_key")
+
+        success_values = action.get("success_values")
+        if success_values is not None:
+            if isinstance(success_values, (list, tuple, set)):
+                success_values = {str(x) for x in success_values}
+            else:
+                _LOGGER.warning(
+                    "Invalid action definition (success_values must be list/tuple/set): %s",
+                    action,
+                )
+                success_values = None
+
+        return await self.async_execute_ubus_action(
+            call,
+            success_key=success_key,
+            success_values=success_values,
+        )
+
     # --------------------------------------------------------------------
     # Public API used by the HA DataUpdateCoordinator
     # --------------------------------------------------------------------
     async def async_update_all(self) -> dict[str, Any]:
         """Fetch all relevant router data for Home Assistant in one go."""
 
-        await self._async_ensure_logged_in()
+        # One authenticated batch request (public endpoints also work with an authenticated SID)
+        batch_calls = [
+            {"service": "zte_nwinfo_api", "method": "nwinfo_get_netinfo"},
+            {"service": "zwrt_wlan", "method": "report"},
+            {"service": "zwrt_bsp.thermal", "method": "get_cpu_temp"},
+            {"service": "zwrt_mc.device.manager", "method": "get_device_info"},
+            {"service": "zwrt_router.api", "method": "router_get_status"},
+            {"service": "uci","method": "get", "params": {"config": "zwrt_common_info", "section": "common_config"}},
+        ]
 
-        netinfo_res = await self.async_call_ubus(
-            {"service": "zte_nwinfo_api", "method": "nwinfo_get_netinfo"}
-        )
-        temp_res = await self.async_call_ubus(
-            {"service": "zwrt_bsp.thermal", "method": "get_cpu_temp"}
-        )
-        dev_res = await self.async_call_ubus(
-            {"service": "zwrt_mc.device.manager", "method": "get_device_info"}
-        )
-        wan_res = await self.async_call_ubus(
-            {"service": "zwrt_router.api", "method": "router_get_status"}
-        )
+        results = await self.async_call_ubus_batch(batch_calls)
+        netinfo_res, wlan_res, temp_res, dev_res, wan_res, uci_common_res = results
+
+        wan = wan_res.get("data") or {}
+        common_config = (uci_common_res.get("data") or {}).get("values") or {}
 
         netinfo = netinfo_res.get("data") or {}
         bands_summary, total_bw_mhz = self._compute_bands_and_bw(netinfo)
 
+        wlan = wlan_res.get("data") or {}
+
         return {
             "netinfo": netinfo,
+            "wlan": wlan,
             "thermal": temp_res.get("data"),
             "device": dev_res.get("data"),
-            "wan": wan_res.get("data"),
+            "common_config": common_config,
+            "wan": wan,
             # derived fields
             "bands_summary": bands_summary,
             "total_bw_mhz": total_bw_mhz,
