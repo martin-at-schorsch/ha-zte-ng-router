@@ -64,9 +64,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     async def _async_update_data() -> dict[str, Any]:
-        """Fetch data from the router in an executor thread."""
+        """Fetch data from the router."""
         try:
-            data = await hass.async_add_executor_job(api.update_all)
+            data = await api.async_update_all()
             if data is None:
                 raise UpdateFailed("No data returned from router")
             return data
