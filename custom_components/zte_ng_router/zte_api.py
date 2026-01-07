@@ -305,10 +305,6 @@ class ZteRouterApi:
                 sid_preview,
             )
             headers = dict(self._base_headers)
-            if call.get("service") == "uci":
-                headers["Z-Tag"] = (call.get("params") or {}).get("config", "")
-            else:
-                headers["Z-Tag"] = call.get("method", "")
             async with self._session.post(
                 url,
                 json=req,
@@ -421,6 +417,7 @@ class ZteRouterApi:
         calls: list[dict[str, Any]],
         *,
         retry_on_connreset_104: bool = True,
+        retry_on_access_denied: bool = True,
     ) -> list[dict[str, Any]]:
         """Send multiple ubus calls in a single JSON-RPC batch request.
 
@@ -461,14 +458,8 @@ class ZteRouterApi:
                 "ubus batch call: n=%s sid=%s", len(req), sid_preview
             )
             headers = dict(self._base_headers)
-            first_call = calls[0] if calls else {}
-            if first_call.get("service") == "uci":
-                headers["Z-Tag"] = (first_call.get("params") or {}).get("config", "")
-            else:
-                headers["Z-Tag"] = first_call.get("method", "")
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 try:
-                    _LOGGER.debug("ubus batch request headers: %s", {"Z-Tag": headers.get("Z-Tag")})
                     _LOGGER.debug("ubus batch request payload: %s", json.dumps(req))
                 except Exception:
                     pass
@@ -482,6 +473,26 @@ class ZteRouterApi:
                 raw_text = await resp.text()
                 _LOGGER.debug("ubus batch raw response: %s", raw_text)
                 res_list = json.loads(raw_text)
+                # If the session expired, the router may return -32002 for batch items.
+                if retry_on_access_denied and isinstance(res_list, list):
+                    any_denied = False
+                    for it in res_list:
+                        if isinstance(it, dict) and "error" in it:
+                            err = it.get("error") or {}
+                            if err.get("code") == -32002:
+                                any_denied = True
+                                break
+
+                    if any_denied:
+                        _LOGGER.debug("ubus batch access denied (-32002) detected; re-login and retry once")
+                        self._logged_in = False
+                        self._session_id = None
+                        await self._async_ensure_logged_in(force=True)
+                        return await self.async_call_ubus_batch(
+                            calls,
+                            retry_on_connreset_104=retry_on_connreset_104,
+                            retry_on_access_denied=False,
+                        )
         except Exception as exc:
             _LOGGER.warning("HTTP error while calling ubus batch: %s", exc)
 
@@ -498,6 +509,7 @@ class ZteRouterApi:
                 return await self.async_call_ubus_batch(
                     calls,
                     retry_on_connreset_104=False,
+                    retry_on_access_denied=retry_on_access_denied,
                 )
 
             return [{"success": False, "data": None, "error": {"message": str(exc)}} for _ in calls]
