@@ -48,6 +48,9 @@ class ZteRouterApi:
         self._session_id: Optional[str] = None
         self._logged_in: bool = False
 
+        self._auth_lock = asyncio.Lock()
+        self._last_login_monotonic: float | None = None
+
         # Headers similar to the JS script environment
         self._base_headers = {
             "Content-Type": "application/json;charset=UTF-8",
@@ -244,6 +247,19 @@ class ZteRouterApi:
         self._logged_in = True
         _LOGGER.info("ZTE NG Router login successful")
 
+    async def _async_ensure_logged_in(self, *, force: bool = False) -> None:
+        """Ensure we have a valid ubus session.
+
+        Uses a lock to prevent concurrent logins and avoids repeated logins within the same update cycle.
+        """
+        async with self._auth_lock:
+            if not force and self._logged_in and self._session_id:
+                return
+
+            await self.async_init_session()
+            await self.async_login()
+            self._last_login_monotonic = asyncio.get_running_loop().time()
+
     # --------------------------------------------------------------------
     # ubus caller with automatic re-login on -32002
     # --------------------------------------------------------------------
@@ -294,8 +310,7 @@ class ZteRouterApi:
                 self._session_id = None
 
                 try:
-                    await self.async_init_session()
-                    await self.async_login()
+                    await self._async_ensure_logged_in(force=True)
                 except Exception as exc2:
                     _LOGGER.error("Re-login failed after 104: %s", exc2)
                     return {"success": False, "data": None}
@@ -320,18 +335,17 @@ class ZteRouterApi:
             err = res0["error"]
             code = err.get("code")
             msg = err.get("message")
-            _LOGGER.warning("ubus error: code=%s msg=%s", code, msg)
 
-            # Access denied → re-login
+            # Access denied → re-login (expected on some firmwares when session expires)
             if code == -32002 and retry_on_access_denied:
-                _LOGGER.warning("Access denied, attempting re-login")
+                _LOGGER.debug("ubus access denied (code=%s msg=%s), attempting re-login", code, msg)
 
+                # Mark current session as invalid and perform a single forced re-login.
                 self._logged_in = False
                 self._session_id = None
 
                 try:
-                    await self.async_init_session()
-                    await self.async_login()
+                    await self._async_ensure_logged_in(force=True)
                 except Exception as exc:
                     _LOGGER.error("Re-login failed: %s", exc)
                     return {"success": False, "data": None}
@@ -343,6 +357,8 @@ class ZteRouterApi:
                     retry_on_connreset_104=retry_on_access_denied,
                 )
 
+            # Non-retryable error (or retry disabled)
+            _LOGGER.warning("ubus error: code=%s msg=%s", code, msg)
             return {"success": False, "data": None}
 
         # Normal result
@@ -358,9 +374,7 @@ class ZteRouterApi:
     async def async_update_all(self) -> dict[str, Any]:
         """Fetch all relevant router data for Home Assistant in one go."""
 
-        if not self._logged_in:
-            await self.async_init_session()
-            await self.async_login()
+        await self._async_ensure_logged_in()
 
         netinfo_res = await self.async_call_ubus(
             {"service": "zte_nwinfo_api", "method": "nwinfo_get_netinfo"}
