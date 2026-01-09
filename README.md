@@ -1,3 +1,6 @@
+[![HACS Default](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/hacs/integration)
+![Installation Count](https://img.shields.io/badge/dynamic/json?color=41BDF5&logo=home-assistant&label=integration%20usage&suffix=%20installs&cacheSeconds=15600&url=https://analytics.home-assistant.io/custom_integrations.json&query=$.zte_ng_router.total)
+
 # ZTE NG Router – Home Assistant Custom Integration
 
 Custom Home Assistant integration to monitor and control **modern ZTE “NG” 5G/FWA routers** via their **local HTTP API**.
