@@ -23,7 +23,11 @@ This integration targets **recent ZTE NG router platforms** with a shared firmwa
 
 If you successfully use this integration with a listed model and specific firmware, consider contributing that information via an issue or pull request.
 
+## Installation
 
+Just click here to open HACS directly in your Homeassistant to install this custom integration.
+
+[![HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=rosenrot00&repository=ha-zte-ng-router&category=integration)
 
 ## Features
 
