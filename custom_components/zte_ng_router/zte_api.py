@@ -305,6 +305,17 @@ class ZteRouterApi:
                 sid_preview,
             )
             headers = dict(self._base_headers)
+            # WebUI sets Z-Tag to the ubus method name (or UCI config name for uci.get)
+            try:
+                svc = str(call.get("service") or "")
+                if svc == "uci":
+                    ztag = str((call.get("params") or {}).get("config") or "")
+                else:
+                    ztag = str(call.get("method") or "")
+                if ztag:
+                    headers["Z-Tag"] = ztag
+            except Exception:
+                pass
             async with self._session.post(
                 url,
                 json=req,
@@ -645,13 +656,15 @@ class ZteRouterApi:
             {"service": "zwrt_mc.device.manager", "method": "get_device_info"},
             {"service": "zwrt_router.api", "method": "router_get_status"},
             {"service": "uci","method": "get", "params": {"config": "zwrt_common_info", "section": "common_config"}},
+            {"service": "zwrt_led", "method": "get_ODU_switch_state", "params": {}},
         ]
 
         results = await self.async_call_ubus_batch(batch_calls)
-        netinfo_res, wlan_res, temp_res, dev_res, wan_res, uci_common_res = results
+        netinfo_res, wlan_res, temp_res, dev_res, wan_res, uci_common_res, odu_led_res = results
 
         wan = wan_res.get("data") or {}
         common_config = (uci_common_res.get("data") or {}).get("values") or {}
+        odu_led = odu_led_res.get("data") or {}
 
         netinfo = netinfo_res.get("data") or {}
         bands_summary, total_bw_mhz = self._compute_bands_and_bw(netinfo)
@@ -661,6 +674,7 @@ class ZteRouterApi:
         return {
             "netinfo": netinfo,
             "wlan": wlan,
+            "odu_led": odu_led,
             "thermal": temp_res.get("data"),
             "device": dev_res.get("data"),
             "common_config": common_config,
