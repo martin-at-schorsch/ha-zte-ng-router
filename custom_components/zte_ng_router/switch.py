@@ -31,7 +31,7 @@ class ZteActionSwitchDef:
 SWITCH_DEFS: list[ZteActionSwitchDef] = [
     ZteActionSwitchDef(
         key="odu_led",
-        name="ODU LED",
+        name="LED",
         icon="mdi:led-on",
         state_key="switch",
         on_value="1",
