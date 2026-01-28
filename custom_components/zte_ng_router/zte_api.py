@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+import time
 from typing import Any, Optional
 
 import aiohttp
-from aiohttp import ClientError, ClientSession
+from aiohttp import ClientError, ClientSession, CookieJar
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -44,10 +45,12 @@ class ZteRouterApi:
                 "ZteRouterApi initialized without hass; falling back to a standalone aiohttp session"
             )
             connector = aiohttp.TCPConnector(ssl=verify_tls)
-            self._session = aiohttp.ClientSession(connector=connector)
+            jar = CookieJar(unsafe=True)
+            self._session = aiohttp.ClientSession(connector=connector, cookie_jar=jar)
 
         self._session_id: Optional[str] = None
         self._logged_in: bool = False
+        self._webtoken: Optional[str] = None
 
         self._auth_lock = asyncio.Lock()
 
@@ -57,15 +60,15 @@ class ZteRouterApi:
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Z-Mode": "1",
             "Origin": self.base_url,
-            "Referer": self.base_url + "/",
+            "Referer": self.base_url + "/index.html",
         }
 
     # --------------------------------------------------------------------
     # Helper: ubus URL
     # --------------------------------------------------------------------
     def _ubus_url(self) -> str:
-        # double t marker like the JS script uses
-        return f"{self.base_url}/ubus/?t=1&t=2"
+        # WebUI uses a cache-busting timestamp query param
+        return f"{self.base_url}/ubus/?t={int(time.time() * 1000)}"
 
     # --------------------------------------------------------------------
     # Helper: hashing
@@ -93,6 +96,24 @@ class ZteRouterApi:
             cur = cur.__cause__ or cur.__context__
 
         return False
+
+    def _update_webtoken_from_response(self, resp: aiohttp.ClientResponse) -> None:
+        """Capture rotating 'webtoken' from response cookies (Set-Cookie)."""
+        try:
+            c = resp.cookies.get("webtoken")
+            if c is not None and c.value:
+                new_token = c.value.strip('"')
+                if new_token and new_token != self._webtoken:
+                    _LOGGER.debug("Updated webtoken from response")
+                    self._webtoken = new_token
+        except Exception:
+            # Best-effort only
+            pass
+
+    def _apply_webtoken_cookie(self, headers: dict[str, str]) -> None:
+        """Attach current webtoken cookie to request headers."""
+        if self._webtoken:
+            headers["Cookie"] = f'webtoken="{self._webtoken}"'
 
     # --------------------------------------------------------------------
     # Band helpers (simplified)
@@ -199,6 +220,7 @@ class ZteRouterApi:
         try:
             async with self._session.get(url, timeout=10) as resp:
                 await resp.read()
+                self._update_webtoken_from_response(resp)
                 _LOGGER.debug("async_init_session: status=%s", resp.status)
         except (ClientError, asyncio.TimeoutError, OSError) as exc:
             _LOGGER.warning("async_init_session GET %s failed: %s", url, exc)
@@ -305,6 +327,18 @@ class ZteRouterApi:
                 sid_preview,
             )
             headers = dict(self._base_headers)
+            # Match WebUI behavior: Z-Mode=1 only for authenticated calls
+            if self._logged_in and self._session_id and session_id != "0" * 32:
+                headers["Z-Mode"] = "1"
+            else:
+                headers["Z-Mode"] = "0"
+
+            # jQuery adds this header; some firmwares are picky for action calls
+            headers.setdefault("X-Requested-With", "XMLHttpRequest")
+
+            # Always apply webtoken cookie if available
+            self._apply_webtoken_cookie(headers)
+
             # WebUI sets Z-Tag to the ubus method name (or UCI config name for uci.get)
             try:
                 svc = str(call.get("service") or "")
@@ -323,6 +357,7 @@ class ZteRouterApi:
                 timeout=10,
             ) as resp:
                 resp.raise_for_status()
+                self._update_webtoken_from_response(resp)
                 res_list = await resp.json(content_type=None)
         except Exception as exc:
             _LOGGER.warning("HTTP error while calling ubus: %s", exc)
@@ -417,8 +452,10 @@ class ZteRouterApi:
 
         # Normal result
         result = res0.get("result") or []
-        if result and result[0] == 0:
-            return {"success": True, "data": result[1]}
+        if isinstance(result, list) and result and result[0] == 0:
+            # Some ubus methods (especially SET/actions) may return only [0] without a payload.
+            data = result[1] if len(result) > 1 else None
+            return {"success": True, "data": data}
 
         return {"success": False, "data": None}
 
@@ -469,6 +506,10 @@ class ZteRouterApi:
                 "ubus batch call: n=%s sid=%s", len(req), sid_preview
             )
             headers = dict(self._base_headers)
+            headers["Z-Mode"] = "1"
+            headers.setdefault("X-Requested-With", "XMLHttpRequest")
+            # Always apply webtoken cookie if available
+            self._apply_webtoken_cookie(headers)
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 try:
                     _LOGGER.debug("ubus batch request payload: %s", json.dumps(req))
@@ -481,6 +522,7 @@ class ZteRouterApi:
                 timeout=10,
             ) as resp:
                 resp.raise_for_status()
+                self._update_webtoken_from_response(resp)
                 raw_text = await resp.text()
                 _LOGGER.debug("ubus batch raw response: %s", raw_text)
                 res_list = json.loads(raw_text)
@@ -545,8 +587,10 @@ class ZteRouterApi:
                 continue
 
             result = item.get("result") or []
-            if result and result[0] == 0:
-                out[idx] = {"success": True, "data": result[1], "error": None}
+            if isinstance(result, list) and result and result[0] == 0:
+                # Some ubus methods return only [0] (no payload) on success.
+                data = result[1] if len(result) > 1 else None
+                out[idx] = {"success": True, "data": data, "error": None}
             else:
                 out[idx] = {"success": False, "data": None, "error": {"message": "nonzero_result"}}
 
@@ -655,16 +699,20 @@ class ZteRouterApi:
             {"service": "zwrt_bsp.thermal", "method": "get_cpu_temp"},
             {"service": "zwrt_mc.device.manager", "method": "get_device_info"},
             {"service": "zwrt_router.api", "method": "router_get_status"},
-            {"service": "uci","method": "get", "params": {"config": "zwrt_common_info", "section": "common_config"}},
+            {"service": "uci", "method": "get", "params": {"config": "zwrt_common_info", "section": "common_config"}},
             {"service": "zwrt_led", "method": "get_ODU_switch_state", "params": {}},
+            {"service": "uci", "method": "get", "params": {"config": "wireless", "section": "main_2g"}},
+            {"service": "uci", "method": "get", "params": {"config": "wireless", "section": "main_5g"}},
         ]
 
         results = await self.async_call_ubus_batch(batch_calls)
-        netinfo_res, wlan_res, temp_res, dev_res, wan_res, uci_common_res, odu_led_res = results
+        netinfo_res, wlan_res, temp_res, dev_res, wan_res, uci_common_res, odu_led_res, uci_wifi_2g_res, uci_wifi_5g_res = results
 
         wan = wan_res.get("data") or {}
         common_config = (uci_common_res.get("data") or {}).get("values") or {}
         odu_led = odu_led_res.get("data") or {}
+        wifi_main_2g = (uci_wifi_2g_res.get("data") or {}).get("values") or {}
+        wifi_main_5g = (uci_wifi_5g_res.get("data") or {}).get("values") or {}
 
         netinfo = netinfo_res.get("data") or {}
         bands_summary, total_bw_mhz = self._compute_bands_and_bw(netinfo)
@@ -674,6 +722,8 @@ class ZteRouterApi:
         return {
             "netinfo": netinfo,
             "wlan": wlan,
+            "wifi_main_2g": wifi_main_2g,
+            "wifi_main_5g": wifi_main_5g,
             "odu_led": odu_led,
             "thermal": temp_res.get("data"),
             "device": dev_res.get("data"),
