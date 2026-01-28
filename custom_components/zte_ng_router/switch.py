@@ -49,6 +49,66 @@ SWITCH_DEFS: list[ZteActionSwitchDef] = [
             "params": {"switch": "0", "offtime": "15"},
         },
     ),
+    ZteActionSwitchDef(
+        key="wifi_master",
+        name="WiFi",
+        icon="mdi:wifi",
+        state_key="wifi_onoff",
+        on_value="1",
+        off_value="0",
+        # master state from zwrt_wlan/report (already stored as coordinator.data["wlan"])
+        get_path=lambda data: data.get("wlan", {}),
+        turn_on={
+            "service": "zwrt_wlan",
+            "method": "set",
+            "params": {"zte_mbb": {"wifi_onoff": "1"}},
+        },
+        turn_off={
+            "service": "zwrt_wlan",
+            "method": "set",
+            "params": {"zte_mbb": {"wifi_onoff": "0"}},
+        },
+    ),
+    ZteActionSwitchDef(
+        key="wifi_main_2g",
+        name="WiFi 2 GHz",
+        icon="mdi:wifi",
+        state_key="disabled",
+        # UCI uses disabled=0 (enabled) and disabled=1 (disabled)
+        on_value="0",
+        off_value="1",
+        get_path=lambda data: data.get("wifi_main_2g", {}),
+        turn_on={
+            "service": "zwrt_wlan",
+            "method": "set",
+            "params": {"main_2g": {"disabled": "0"}},
+        },
+        turn_off={
+            "service": "zwrt_wlan",
+            "method": "set",
+            "params": {"main_2g": {"disabled": "1"}},
+        },
+    ),
+    ZteActionSwitchDef(
+        key="wifi_main_5g",
+        name="WiFi 5 GHz",
+        icon="mdi:wifi",
+        state_key="disabled",
+        # UCI uses disabled=0 (enabled) and disabled=1 (disabled)
+        on_value="0",
+        off_value="1",
+        get_path=lambda data: data.get("wifi_main_5g", {}),
+        turn_on={
+            "service": "zwrt_wlan",
+            "method": "set",
+            "params": {"main_5g": {"disabled": "0"}},
+        },
+        turn_off={
+            "service": "zwrt_wlan",
+            "method": "set",
+            "params": {"main_5g": {"disabled": "1"}},
+        },
+    ),
     # weitere Switches einfach hier anhängen
 ]
 
@@ -99,6 +159,13 @@ class ZteActionSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def is_on(self) -> bool:
         data = self.coordinator.data or {}
+
+        # If WiFi master is OFF, force band switches to show OFF
+        if self._def.key in ("wifi_main_2g", "wifi_main_5g"):
+            wifi_onoff = (data.get("wlan") or {}).get("wifi_onoff")
+            if str(wifi_onoff) != "1":
+                return False
+
         node = self._def.get_path(data) or {}
         value = node.get(self._def.state_key)
         return str(value) == self._def.on_value
@@ -107,6 +174,7 @@ class ZteActionSwitch(CoordinatorEntity, SwitchEntity):
     def extra_state_attributes(self) -> dict[str, Any] | None:
         data = self.coordinator.data or {}
         return self._def.get_path(data)
+
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         _LOGGER.info("Turning ON ZTE switch: %s", self._def.key)
