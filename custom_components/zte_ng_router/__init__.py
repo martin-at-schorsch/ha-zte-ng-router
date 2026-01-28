@@ -27,7 +27,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-PLATFORMS: list[str] = ["sensor", "button"]
+PLATFORMS: list[str] = ["sensor", "button", "switch"]
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
