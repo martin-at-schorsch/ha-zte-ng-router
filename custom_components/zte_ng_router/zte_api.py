@@ -703,16 +703,22 @@ class ZteRouterApi:
             {"service": "zwrt_led", "method": "get_ODU_switch_state", "params": {}},
             {"service": "uci", "method": "get", "params": {"config": "wireless", "section": "main_2g"}},
             {"service": "uci", "method": "get", "params": {"config": "wireless", "section": "main_5g"}},
+            {
+                "service": "zwrt_data",
+                "method": "get_wwandst",
+                "params": {"source_module": "web", "cid": 1, "type": 4},
+            },
         ]
 
         results = await self.async_call_ubus_batch(batch_calls)
-        netinfo_res, wlan_res, temp_res, dev_res, wan_res, uci_common_res, odu_led_res, uci_wifi_2g_res, uci_wifi_5g_res = results
+        netinfo_res, wlan_res, temp_res, dev_res, wan_res, uci_common_res, odu_led_res, uci_wifi_2g_res, uci_wifi_5g_res, wwandst_res = results
 
         wan = wan_res.get("data") or {}
         common_config = (uci_common_res.get("data") or {}).get("values") or {}
         odu_led = odu_led_res.get("data") or {}
         wifi_main_2g = (uci_wifi_2g_res.get("data") or {}).get("values") or {}
         wifi_main_5g = (uci_wifi_5g_res.get("data") or {}).get("values") or {}
+        wwandst = wwandst_res.get("data") or {}
 
         netinfo = netinfo_res.get("data") or {}
         bands_summary, total_bw_mhz = self._compute_bands_and_bw(netinfo)
@@ -729,6 +735,7 @@ class ZteRouterApi:
             "device": dev_res.get("data"),
             "common_config": common_config,
             "wan": wan,
+            "wwandst": wwandst,
             # derived fields
             "bands_summary": bands_summary,
             "total_bw_mhz": total_bw_mhz,
