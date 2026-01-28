@@ -67,6 +67,9 @@ SENSOR_DEFS = [
     ("wan_ipv4", "WAN IPv4", None, None, None),
     ("wan_ipv6", "WAN IPv6", None, None, None),
     ("wan_status", "WAN Status", None, None, None),
+    # Connected time in seconds (session duration) – Home Assistant can display as h/m
+    ("connected_time", "Connected Time", SensorDeviceClass.DURATION,
+     "s", SensorStateClass.MEASUREMENT),
     ("hardware_version", "Hardware Version", None, None, None),
     ("wa_inner_version", "WA Inner Version", None, None, None),
     ("cpu_temp", "CPU Temperature", SensorDeviceClass.TEMPERATURE,
@@ -215,6 +218,10 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
 
     if key == "wan_status":
         return wan.get("mwan_wanlan1_status") or wan.get("current_wan_status")
+
+    if key == "connected_time":
+        # real_time is the current session connected time in seconds
+        return _as_number(wan.get("real_time"))
 
     if key == "hardware_version":
         return common_config.get("hardware_version")
