@@ -19,9 +19,9 @@ This integration targets **recent ZTE NG router platforms** with a shared firmwa
 - **ZTE G5 Max**  
 - **ZTE G5 Ultra**
 
-> ⚠️ Support depends on **firmware version and operator customizations**. ISP-branded devices may restrict or disable parts of the local HTTP API.
+> ⚠️ Support depends on **firmware version and operator customizations**. ISP-branded devices may restrict or disable parts of the local HTTP API. Please keep in mind that while this integration is running, you will be logged out from the webui on every poll as only a single login is allowed on these devices.
 
-If you successfully use this integration with a listed model and specific firmware, consider contributing that information via an issue or pull request.
+If you face any issue with this integration, consider contributing that information via an issue.
 
 ## Installation
 
