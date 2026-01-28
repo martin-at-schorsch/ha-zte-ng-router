@@ -220,8 +220,12 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
         return wan.get("mwan_wanlan1_status") or wan.get("current_wan_status")
 
     if key == "connected_time":
-        # real_time is the current session connected time in seconds
-        return _as_number(wan.get("real_time"))
+        # Prefer router_get_status.real_time if present, otherwise use zwrt_data.get_wwandst(type=4).real_time
+        v = wan.get("real_time")
+        if v in (None, "", "-"):
+            wwandst = data.get("wwandst") or {}
+            v = wwandst.get("real_time")
+        return _as_number(v)
 
     if key == "hardware_version":
         return common_config.get("hardware_version")
