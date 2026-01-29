@@ -686,6 +686,41 @@ class ZteRouterApi:
             success_values=success_values,
         )
 
+    async def async_update_fast(self) -> dict[str, Any] | None:
+        """Fetch only fast-changing WAN stats (rates + connected time).
+
+        Keeps the payload small and avoids polling heavy endpoints at high frequency.
+        Returns a partial data dict containing at least:
+          - "wan": router_get_status payload
+          - "wwandst": get_wwandst(type=4) payload (for real_time on firmwares that omit it in router_get_status)
+        """
+
+        # Ensure we have an authenticated session.
+        if not self._session_id or not self._logged_in:
+            await self._async_ensure_logged_in()
+
+        batch_calls = [
+            {"service": "zwrt_router.api", "method": "router_get_status"},
+            {
+                "service": "zwrt_data",
+                "method": "get_wwandst",
+                "params": {"source_module": "web", "cid": 1, "type": 4},
+            },
+        ]
+
+        results = await self.async_call_ubus_batch(batch_calls)
+        if not isinstance(results, list) or len(results) != 2:
+            return None
+
+        wan_res, wwandst_res = results
+        wan = wan_res.get("data") or {}
+        wwandst = wwandst_res.get("data") or {}
+
+        return {
+            "wan": wan,
+            "wwandst": wwandst,
+        }
+
     # --------------------------------------------------------------------
     # Public API used by the HA DataUpdateCoordinator
     # --------------------------------------------------------------------
