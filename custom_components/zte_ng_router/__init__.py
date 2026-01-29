@@ -19,7 +19,9 @@ from .const import (
     CONF_ROUTER_TYPE,
     CONF_VERIFY_TLS,
     CONF_SCAN_INTERVAL,
+    CONF_FAST_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_FAST_SCAN_INTERVAL,
 )
 from .zte_api import ZteRouterApi
 
@@ -56,6 +58,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_SCAN_INTERVAL,
         data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
     )
+    fast_scan_interval: int = options.get(
+        CONF_FAST_SCAN_INTERVAL,
+        data.get(CONF_FAST_SCAN_INTERVAL, DEFAULT_FAST_SCAN_INTERVAL),
+    )
 
     api = ZteRouterApi(
         hass=hass,
@@ -77,6 +83,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("Error updating ZTE router data: %s", err)
             raise UpdateFailed(str(err)) from err
 
+    async def _async_update_fast() -> dict[str, Any]:
+        """Fetch fast-changing WAN stats from the router."""
+        try:
+            fast_data = await api.async_update_fast()
+            if fast_data is None:
+                raise UpdateFailed("No fast data returned from router")
+            return fast_data
+        except Exception as err:
+            _LOGGER.error("Error updating ZTE router fast data: %s", err)
+            raise UpdateFailed(str(err)) from err
+
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
@@ -85,11 +102,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(seconds=scan_interval),
     )
 
+    coordinator_fast = DataUpdateCoordinator(
+        hass,
+        _LOGGER,
+        name=f"zte_ng_router_{name}_fast",
+        update_method=_async_update_fast,
+        update_interval=timedelta(seconds=fast_scan_interval),
+    )
+
     await coordinator.async_config_entry_first_refresh()
+    await coordinator_fast.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = {
         "api": api,
         "coordinator": coordinator,
+        "coordinator_fast": coordinator_fast,
         "name": name,
     }
 
