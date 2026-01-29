@@ -67,6 +67,8 @@ SENSOR_DEFS = [
     ("wan_ipv4", "WAN IPv4", None, None, None),
     ("wan_ipv6", "WAN IPv6", None, None, None),
     ("wan_status", "WAN Status", None, None, None),
+    ("download_rate", "Download Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
+    ("upload_rate", "Upload Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
     # Connected time in seconds (session duration) – Home Assistant can display as h/m
     ("connected_time", "Connected Time", SensorDeviceClass.DURATION,
      "s", SensorStateClass.MEASUREMENT),
@@ -99,6 +101,17 @@ def _as_number(value: Any) -> Any:
         except ValueError:
             return None
     return None
+
+def _to_mbit_per_s(value: Any) -> Any:
+    """Convert router speed value to Mbit/s.
+
+    ZTE's web UI converts current rates to Mbit/s via: value * 8 / 1e6.
+    We keep the sensor numeric; HA will format/display accordingly.
+    """
+    v = _as_number(value)
+    if v is None:
+        return None
+    return (v * 8.0) / 1_000_000.0
 
 
 def _extract_value(data: dict[str, Any], key: str) -> Any:
@@ -219,6 +232,14 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
     if key == "wan_status":
         return wan.get("mwan_wanlan1_status") or wan.get("current_wan_status")
 
+    if key == "download_rate":
+        # router_get_status current download rate
+        return _to_mbit_per_s(wan.get("real_rx_speed"))
+
+    if key == "upload_rate":
+        # router_get_status current upload rate
+        return _to_mbit_per_s(wan.get("real_tx_speed"))
+
     if key == "connected_time":
         # Prefer router_get_status.real_time if present, otherwise use zwrt_data.get_wwandst(type=4).real_time
         v = wan.get("real_time")
@@ -251,13 +272,21 @@ async def async_setup_entry(
     """Set up sensor entities from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator: DataUpdateCoordinator = data["coordinator"]
+    coordinator_fast: DataUpdateCoordinator | None = data.get("coordinator_fast")
+    fast_keys = {"connected_time", "download_rate", "upload_rate"}
     router_name: str = data["name"]  # name given in config flow
 
     entities: list[ZteNgRouterSensor] = []
     for key, name, dev_class, unit, state_class in SENSOR_DEFS:
+        use_coordinator = (
+            coordinator_fast
+            if coordinator_fast is not None and key in fast_keys
+            else coordinator
+        )
+
         entities.append(
             ZteNgRouterSensor(
-                coordinator=coordinator,
+                coordinator=use_coordinator,
                 entry_id=entry.entry_id,
                 router_name=router_name,
                 key=key,
