@@ -111,7 +111,7 @@ def _to_mbit_per_s(value: Any) -> Any:
     v = _as_number(value)
     if v is None:
         return None
-    return (v * 8.0) / 1_000_000.0
+    return round((v * 8.0) / 1_000_000.0, 2)
 
 
 def _extract_value(data: dict[str, Any], key: str) -> Any:
@@ -233,12 +233,20 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
         return wan.get("mwan_wanlan1_status") or wan.get("current_wan_status")
 
     if key == "download_rate":
-        # router_get_status current download rate
-        return _to_mbit_per_s(wan.get("real_rx_speed"))
+        # Live rate comes from zwrt_data.get_wwandst(type=4) on this firmware
+        wwandst = data.get("wwandst") or {}
+        v = wwandst.get("real_rx_speed")
+        if v in (None, "", "-"):
+            v = wan.get("real_rx_speed")
+        return _to_mbit_per_s(v)
 
     if key == "upload_rate":
-        # router_get_status current upload rate
-        return _to_mbit_per_s(wan.get("real_tx_speed"))
+        # Live rate comes from zwrt_data.get_wwandst(type=4) on this firmware
+        wwandst = data.get("wwandst") or {}
+        v = wwandst.get("real_tx_speed")
+        if v in (None, "", "-"):
+            v = wan.get("real_tx_speed")
+        return _to_mbit_per_s(v)
 
     if key == "connected_time":
         # Prefer router_get_status.real_time if present, otherwise use zwrt_data.get_wwandst(type=4).real_time
