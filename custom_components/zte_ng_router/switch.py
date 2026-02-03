@@ -8,9 +8,11 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .zte_api import ZteRouterApi
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -123,12 +125,18 @@ async def async_setup_entry(
     coordinator = data["coordinator"]
     name = data.get("name", "ZTE Router")
 
-    async_add_entities(
-        [
-            ZteActionSwitch(coordinator, api, entry, name, switch_def)
-            for switch_def in SWITCH_DEFS
-        ]
-    )
+    entities = [
+        ZteActionSwitch(coordinator, api, entry, name, switch_def)
+        for switch_def in SWITCH_DEFS
+    ]
+
+    # Cell lock switches (use text entities for input)
+    entities += [
+        ZteCellLockSwitch(hass, coordinator, api, entry, name, kind="4g"),
+        ZteCellLockSwitch(hass, coordinator, api, entry, name, kind="5g"),
+    ]
+
+    async_add_entities(entities)
 
 
 class ZteActionSwitch(CoordinatorEntity, SwitchEntity):
@@ -191,3 +199,125 @@ class ZteActionSwitch(CoordinatorEntity, SwitchEntity):
             await self.coordinator.async_request_refresh()
         else:
             _LOGGER.warning("Failed to turn OFF ZTE switch: %s", self._def.key)
+
+
+# ----------------- Cell Lock Switches -----------------
+
+class ZteCellLockSwitch(CoordinatorEntity, SwitchEntity):
+    """Switch to enable/disable 4G/5G cell lock.
+
+    - ON: applies the value from the corresponding text entity
+    - OFF: sets 0,0 (4G) or 0,0,0 (5G)
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        coordinator,
+        api,
+        entry: ConfigEntry,
+        device_name: str,
+        *,
+        kind: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self.hass = hass
+        self._api = api
+        self._kind = kind  # "4g" or "5g"
+        self._entry_id = entry.entry_id
+
+        if kind not in ("4g", "5g"):
+            raise ValueError("kind must be '4g' or '5g'")
+
+        self._attr_name = "Cell Lock 4G" if kind == "4g" else "Cell Lock 5G"
+        self._attr_icon = "mdi:cellphone-lock"
+        self._attr_unique_id = f"{entry.entry_id}_cell_lock_{kind}_enabled"
+
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=device_name,
+            manufacturer="ZTE",
+        )
+
+        # Will be resolved lazily via entity registry
+        self._text_entity_id: str | None = None
+
+    def _netinfo(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        node = data.get("netinfo")
+        return node if isinstance(node, dict) else {}
+
+    async def _resolve_text_entity_id(self) -> str | None:
+        """Resolve corresponding text entity_id via the entity registry using unique_id."""
+        if self._text_entity_id:
+            return self._text_entity_id
+
+        # Must match text.py unique_id scheme
+        text_unique_id = f"{self._entry_id}_cell_lock_{self._kind}_text"
+
+        try:
+            er = async_get_entity_registry(self.hass)
+            ent_id = er.async_get_entity_id("text", DOMAIN, text_unique_id)
+            self._text_entity_id = ent_id
+            return ent_id
+        except Exception as e:
+            _LOGGER.debug("Could not resolve text entity id for %s: %s", text_unique_id, e)
+            return None
+
+    @property
+    def is_on(self) -> bool:
+        netinfo = self._netinfo()
+        if self._kind == "4g":
+            return ZteRouterApi.is_4g_cell_lock_active(netinfo)
+        return ZteRouterApi.is_5g_cell_lock_active(netinfo)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        netinfo = self._netinfo()
+        if self._kind == "4g":
+            return {
+                "lock_lte_cell": ZteRouterApi.get_4g_cell_lock_value(netinfo),
+                "suggested": ZteRouterApi.suggest_4g_cell_lock_text(netinfo),
+            }
+        return {
+            "lock_nr_cell": ZteRouterApi.get_5g_cell_lock_value(netinfo),
+            "suggested": ZteRouterApi.suggest_5g_cell_lock_text(netinfo),
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        # Resolve associated text entity and read its current value
+        text_entity_id = await self._resolve_text_entity_id()
+        if not text_entity_id:
+            _LOGGER.warning("Cell lock %s: text entity not found; cannot enable", self._kind)
+            return
+
+        st = self.hass.states.get(text_entity_id)
+        value = (st.state if st else "")
+        value = (value or "").strip()
+
+        try:
+            if self._kind == "4g":
+                ok = await self._api.async_set_4g_cell_lock_enabled(True, value=value)
+            else:
+                ok = await self._api.async_set_5g_cell_lock_enabled(True, value=value)
+        except Exception as e:
+            _LOGGER.warning("Failed to enable cell lock %s: %s", self._kind, e)
+            ok = False
+
+        if ok:
+            await self.coordinator.async_request_refresh()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        try:
+            if self._kind == "4g":
+                ok = await self._api.async_set_4g_cell_lock_enabled(False)
+            else:
+                ok = await self._api.async_set_5g_cell_lock_enabled(False)
+        except Exception as e:
+            _LOGGER.warning("Failed to disable cell lock %s: %s", self._kind, e)
+            ok = False
+
+        if ok:
+            await self.coordinator.async_request_refresh()
