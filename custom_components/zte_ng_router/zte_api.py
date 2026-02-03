@@ -118,7 +118,8 @@ class ZteRouterApi:
     # --------------------------------------------------------------------
     # Band helpers (simplified)
     # --------------------------------------------------------------------
-    def _convert_lte_earfcn_to_band(self, earfcn: int | None) -> int | None:
+    @staticmethod
+    def _convert_lte_earfcn_to_band(earfcn: int | None) -> int | None:
         """Map LTE EARFCN to band number (subset of common bands)."""
         if earfcn is None:
             return None
@@ -145,7 +146,8 @@ class ZteRouterApi:
 
         return None
 
-    def _convert_nr_arfcn_to_band(self, arfcn: int | None) -> int | None:
+    @staticmethod
+    def _convert_nr_arfcn_to_band(arfcn: int | None) -> int | None:
         """Map NR ARFCN to band number (subset of n1/n3/n28/n78...)."""
         if arfcn is None:
             return None
@@ -721,6 +723,8 @@ class ZteRouterApi:
             "wwandst": wwandst,
         }
 
+
+
     # --------------------------------------------------------------------
     # Public API used by the HA DataUpdateCoordinator
     # --------------------------------------------------------------------
@@ -775,3 +779,210 @@ class ZteRouterApi:
             "bands_summary": bands_summary,
             "total_bw_mhz": total_bw_mhz,
         }
+    # --------------------------------------------------------------------
+    # Cell lock helpers (4G / 5G)
+    # --------------------------------------------------------------------
+
+    _LTE_CELL_UNLOCKED = "0,0"
+    _NR_CELL_UNLOCKED = "0,0,0"
+
+    @staticmethod
+    def _norm_cell_lock_str(value: Any) -> str:
+        """Normalize a lock string returned by the router."""
+        if value is None:
+            return ""
+        s = str(value).strip()
+        # Some firmwares may return whitespace or trailing separators
+        s = s.strip(";")
+        return s
+
+    @classmethod
+    def get_4g_cell_lock_value(cls, netinfo: dict[str, Any] | None) -> str:
+        """Return the raw LTE cell lock string (e.g. '123,1300') or '0,0' if unknown."""
+        if not netinfo:
+            return cls._LTE_CELL_UNLOCKED
+        s = cls._norm_cell_lock_str(netinfo.get("lock_lte_cell"))
+        return s or cls._LTE_CELL_UNLOCKED
+
+    @classmethod
+    def get_5g_cell_lock_value(cls, netinfo: dict[str, Any] | None) -> str:
+        """Return the raw NR cell lock string (e.g. '12,630000,78') or '0,0,0' if unknown."""
+        if not netinfo:
+            return cls._NR_CELL_UNLOCKED
+        s = cls._norm_cell_lock_str(netinfo.get("lock_nr_cell"))
+        return s or cls._NR_CELL_UNLOCKED
+
+    @classmethod
+    def suggest_4g_cell_lock_text(cls, netinfo: dict[str, Any] | None) -> str:
+        """Suggest a lock text 'PCI,EARFCN'.
+
+        Preference order:
+        1) If a LTE lock is already configured (lock_lte_cell not '0,0'), return that.
+        2) Otherwise, suggest the currently serving LTE cell (lte_pci + lte_action_channel).
+        """
+        if not netinfo:
+            return ""
+
+        cur_lock = cls._norm_cell_lock_str(netinfo.get("lock_lte_cell"))
+        if cur_lock and cur_lock != cls._LTE_CELL_UNLOCKED:
+            return cur_lock
+
+        pci = netinfo.get("lte_pci")
+        earfcn = netinfo.get("lte_action_channel")
+        try:
+            if pci is None or earfcn is None:
+                return ""
+            return f"{int(pci)},{int(earfcn)}"
+        except (TypeError, ValueError):
+            return ""
+
+    @classmethod
+    def suggest_5g_cell_lock_text(cls, netinfo: dict[str, Any] | None) -> str:
+        """Suggest a lock text 'PCI,ARFCN,BAND'.
+
+        Preference order:
+        1) If a NR lock is already configured (lock_nr_cell not '0,0,0'), return that.
+        2) Otherwise, suggest the currently serving NR cell (nr5g_pci + nr5g_action_channel + band).
+        """
+        if not netinfo:
+            return ""
+
+        cur_lock = cls._norm_cell_lock_str(netinfo.get("lock_nr_cell"))
+        if cur_lock and cur_lock != cls._NR_CELL_UNLOCKED:
+            return cur_lock
+
+        pci = netinfo.get("nr5g_pci")
+        arfcn = netinfo.get("nr5g_action_channel")
+
+        # Band can come as 'n78' or similar
+        band_raw = netinfo.get("nr5g_action_band")
+        band: int | None = None
+        if band_raw:
+            try:
+                band = int(str(band_raw).strip().lower().lstrip("n"))
+            except (TypeError, ValueError):
+                band = None
+
+        # If band is missing, try to infer from ARFCN (subset mapping)
+        if band is None:
+            try:
+                if arfcn is not None:
+                    band = cls._convert_nr_arfcn_to_band(int(arfcn))
+            except Exception:
+                band = None
+
+        try:
+            if pci is None or arfcn is None or band is None:
+                return ""
+            return f"{int(pci)},{int(arfcn)},{int(band)}"
+        except (TypeError, ValueError):
+            return ""
+    @classmethod
+    def is_4g_cell_lock_active(cls, netinfo: dict[str, Any] | None) -> bool:
+        """Return True if LTE cell lock is active according to netinfo."""
+        if not netinfo:
+            return False
+        s = cls._norm_cell_lock_str(netinfo.get("lock_lte_cell"))
+        return bool(s) and s != cls._LTE_CELL_UNLOCKED
+
+    @classmethod
+    def is_5g_cell_lock_active(cls, netinfo: dict[str, Any] | None) -> bool:
+        """Return True if NR cell lock is active according to netinfo."""
+        if not netinfo:
+            return False
+        s = cls._norm_cell_lock_str(netinfo.get("lock_nr_cell"))
+        return bool(s) and s != cls._NR_CELL_UNLOCKED
+
+    @staticmethod
+    def parse_4g_cell_lock_input(text: str) -> tuple[int, int]:
+        """Parse 'PCI,EARFCN' into integers. Raises ValueError on invalid input."""
+        if text is None:
+            raise ValueError("empty")
+        parts = [p.strip() for p in str(text).split(",")]
+        if len(parts) != 2:
+            raise ValueError("expected format: PCI,EARFCN")
+        pci = int(parts[0])
+        earfcn = int(parts[1])
+        if pci < 0 or pci > 503:
+            raise ValueError("LTE PCI out of range (0..503)")
+        if earfcn < 0:
+            raise ValueError("LTE EARFCN must be >= 0")
+        return pci, earfcn
+
+    @staticmethod
+    def parse_5g_cell_lock_input(text: str) -> tuple[int, int, int]:
+        """Parse 'PCI,ARFCN,BAND' into integers. Raises ValueError on invalid input."""
+        if text is None:
+            raise ValueError("empty")
+        parts = [p.strip() for p in str(text).split(",")]
+        if len(parts) != 3:
+            raise ValueError("expected format: PCI,ARFCN,BAND")
+        pci = int(parts[0])
+        arfcn = int(parts[1])
+        band = int(parts[2])
+        if pci < 0 or pci > 1007:
+            raise ValueError("NR PCI out of range (0..1007)")
+        if arfcn < 0:
+            raise ValueError("NR ARFCN must be >= 0")
+        if band < 0:
+            raise ValueError("NR band must be >= 0")
+        return pci, arfcn, band
+
+    async def async_lock_4g_cell(self, pci: int, earfcn: int) -> bool:
+        """Lock LTE cell by PCI+EARFCN."""
+        call = self.build_ubus_call(
+            "zte_nwinfo_api",
+            "nwinfo_lock_lte_cell",
+            {
+                "lock_lte_pci": str(int(pci)),
+                "lock_lte_earfcn": str(int(earfcn)),
+            },
+        )
+        return await self.async_execute_ubus_action(call)
+
+    async def async_unlock_4g_cell(self) -> bool:
+        """Disable LTE cell lock (sets 0,0)."""
+        return await self.async_lock_4g_cell(0, 0)
+
+    async def async_lock_5g_cell(self, pci: int, arfcn: int, band: int) -> bool:
+        """Lock NR (5G) cell by PCI+ARFCN+Band."""
+        call = self.build_ubus_call(
+            "zte_nwinfo_api",
+            "nwinfo_lock_nr_cell",
+            {
+                "lock_nr_pci": str(int(pci)),
+                "lock_nr_earfcn": str(int(arfcn)),
+                "lock_nr_cell_band": str(int(band)),
+            },
+        )
+        return await self.async_execute_ubus_action(call)
+
+    async def async_unlock_5g_cell(self) -> bool:
+        """Disable NR (5G) cell lock (sets 0,0,0)."""
+        return await self.async_lock_5g_cell(0, 0, 0)
+
+    async def async_set_4g_cell_lock_from_text(self, value: str) -> bool:
+        """Set LTE cell lock from UI text 'PCI,EARFCN'."""
+        pci, earfcn = self.parse_4g_cell_lock_input(value)
+        return await self.async_lock_4g_cell(pci, earfcn)
+
+    async def async_set_5g_cell_lock_from_text(self, value: str) -> bool:
+        """Set NR cell lock from UI text 'PCI,ARFCN,BAND'."""
+        pci, arfcn, band = self.parse_5g_cell_lock_input(value)
+        return await self.async_lock_5g_cell(pci, arfcn, band)
+
+    async def async_set_4g_cell_lock_enabled(self, enabled: bool, *, value: str | None = None) -> bool:
+        """Convenience for HA switch: enable uses `value`, disable sets 0,0."""
+        if not enabled:
+            return await self.async_unlock_4g_cell()
+        if not value:
+            raise ValueError("Missing value for enabling 4G cell lock")
+        return await self.async_set_4g_cell_lock_from_text(value)
+
+    async def async_set_5g_cell_lock_enabled(self, enabled: bool, *, value: str | None = None) -> bool:
+        """Convenience for HA switch: enable uses `value`, disable sets 0,0,0."""
+        if not enabled:
+            return await self.async_unlock_5g_cell()
+        if not value:
+            raise ValueError("Missing value for enabling 5G cell lock")
+        return await self.async_set_5g_cell_lock_from_text(value)
