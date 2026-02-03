@@ -9,7 +9,7 @@ from typing import Any
 from homeassistant.components.text import TextEntity, TextEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
@@ -121,12 +121,20 @@ class ZteCellLockTextEntity(CoordinatorEntity, TextEntity):
         if self._kind == "4g":
             if ZteRouterApi.is_4g_cell_lock_active(netinfo):
                 return ZteRouterApi.get_4g_cell_lock_value(netinfo)
-            return self._user_value or ZteRouterApi.suggest_4g_cell_lock_text(netinfo) or ""
+            return (
+                self._user_value
+                or ZteRouterApi.suggest_4g_cell_lock_text(netinfo)
+                or ZteRouterApi.get_4g_cell_lock_value(netinfo)
+            )
 
         # 5g
         if ZteRouterApi.is_5g_cell_lock_active(netinfo):
             return ZteRouterApi.get_5g_cell_lock_value(netinfo)
-        return self._user_value or ZteRouterApi.suggest_5g_cell_lock_text(netinfo) or ""
+        return (
+            self._user_value
+            or ZteRouterApi.suggest_5g_cell_lock_text(netinfo)
+            or ZteRouterApi.get_5g_cell_lock_value(netinfo)
+        )
 
     async def async_set_value(self, value: str) -> None:
         value = (value or "").strip()
