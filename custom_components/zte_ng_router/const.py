@@ -6,9 +6,12 @@ CONF_VERIFY_TLS = "verify_tls"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_FAST_SCAN_INTERVAL = "fast_scan_interval"
 
-# Single router type for now – extend later if needed
+# Supported router types (internal value -> user-facing label)
 ROUTER_TYPES = {
     "g5tc": "ZTE G5TC",
+    "g5ts": "ZTE G5TS",
+    "g5c": "ZTE G5C",
+    "g5max": "ZTE G5 Max/Ultra",
 }
 
 # Slow (full) update interval – used for most sensors
