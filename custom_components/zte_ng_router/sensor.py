@@ -114,6 +114,19 @@ def _to_mbit_per_s(value: Any) -> Any:
     return round((v * 8.0) / 1_000_000.0, 2)
 
 
+def _as_text(value: Any) -> str | None:
+    """Normalize router text values.
+
+    Returns None for empty/placeholder values so HA shows 'unknown' instead of blank.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "" or s == "-":
+        return None
+    return s
+
+
 def _extract_value(data: dict[str, Any], key: str) -> Any:
     """Map a logical key to a value inside the aggregated API data."""
     netinfo = data.get("netinfo") or {}
@@ -224,13 +237,21 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
 
     # WAN / system
     if key == "wan_ipv4":
-        return wan.get("mwan_wanlan1_wan_ipaddr")
+        v = _as_text(wan.get("mwan_wanlan1_wan_ipaddr"))
+        # Some firmwares return 0.0.0.0 when disconnected
+        if v in ("0.0.0.0",):
+            return None
+        return v
 
     if key == "wan_ipv6":
-        return wan.get("mwan_wanlan1_ipv6_wan_ipaddr")
+        v = _as_text(wan.get("mwan_wanlan1_ipv6_wan_ipaddr"))
+        # Some firmwares return 0::0 when disconnected
+        if v in ("0::0", "0:0:0:0:0:0:0:0"):
+            return None
+        return v
 
     if key == "wan_status":
-        return wan.get("mwan_wanlan1_status") or wan.get("current_wan_status")
+        return _as_text(wan.get("mwan_wanlan1_status")) or _as_text(wan.get("current_wan_status"))
 
     if key == "download_rate":
         # Live rate comes from zwrt_data.get_wwandst(type=4) on this firmware
