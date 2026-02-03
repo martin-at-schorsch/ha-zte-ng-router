@@ -8,6 +8,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PASSWORD
 from homeassistant.core import callback
+from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig, SelectOptionDict
 
 from .const import (
     DOMAIN,
@@ -22,6 +23,13 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+ROUTER_TYPE_OPTIONS: list[SelectOptionDict] = [
+    {"value": "g5tc", "label": "ZTE G5TC"},
+    {"value": "g5ts", "label": "ZTE G5TS"},
+    {"value": "g5c", "label": "ZTE G5C"},
+    {"value": "g5max", "label": "ZTE G5 Max/Ultra"},
+]
 
 
 class ZteNgRouterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -62,7 +70,9 @@ class ZteNgRouterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_NAME, default="ZTE NG Router"): str,
                 vol.Required(CONF_HOST, default="http://192.168.0.1"): str,
                 vol.Required(CONF_PASSWORD): str,
-                vol.Required(CONF_ROUTER_TYPE, default="g5tc"): vol.In(ROUTER_TYPES),
+                vol.Required(CONF_ROUTER_TYPE, default="g5tc"): SelectSelector(
+                    SelectSelectorConfig(options=ROUTER_TYPE_OPTIONS, mode="dropdown")
+                ),
                 vol.Optional(CONF_VERIFY_TLS, default=False): bool,
                 vol.Required(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
                     vol.Coerce(int),
@@ -99,6 +109,7 @@ class ZteNgRouterOptionsFlow(config_entries.OptionsFlow):
 
             # Host is always taken from the form
             existing[CONF_HOST] = user_input[CONF_HOST]
+            existing[CONF_ROUTER_TYPE] = user_input[CONF_ROUTER_TYPE]
 
             # Password: only override if user entered something
             new_password = user_input.get(CONF_PASSWORD, "")
@@ -126,6 +137,10 @@ class ZteNgRouterOptionsFlow(config_entries.OptionsFlow):
             CONF_SCAN_INTERVAL,
             data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
         )
+        current_router_type = options.get(
+            CONF_ROUTER_TYPE,
+            data.get(CONF_ROUTER_TYPE, "g5tc"),
+        )
 
         schema = vol.Schema(
             {
@@ -133,6 +148,12 @@ class ZteNgRouterOptionsFlow(config_entries.OptionsFlow):
                     CONF_HOST,
                     default=current_host,
                 ): str,
+                vol.Required(
+                    CONF_ROUTER_TYPE,
+                    default=current_router_type,
+                ): SelectSelector(
+                    SelectSelectorConfig(options=ROUTER_TYPE_OPTIONS, mode="dropdown")
+                ),
                 vol.Optional(
                     CONF_PASSWORD,
                     default="",
