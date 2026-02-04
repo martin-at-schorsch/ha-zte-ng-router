@@ -12,10 +12,10 @@ This integration targets **recent ZTE NG router platforms** with a shared firmwa
 - **ZTE G5 Max**  
 - **ZTE G5 Ultra**
 
-> ⚠️ Support depends on **firmware version and operator customizations**. Please keep in mind that while this integration is running, you will be logged out from the webui on every poll as only a single login is allowed on these devices.
-
 <img width="241" height="340" alt="image" src="https://github.com/user-attachments/assets/5c20d64b-420c-4eb6-9755-0bcd7ee9628e" />
 <img width="232" height="317" alt="image" src="https://github.com/user-attachments/assets/f106729c-4dea-4360-8d36-cc292df123d0" />
+
+> ⚠️ Support depends on **firmware version and operator customizations**. Please keep in mind that while this integration is running, you will be logged out from the webui on every poll as only a single login is allowed on these devices.
 
 If you face any issue with this integration, consider contributing that information via an issue.
 
