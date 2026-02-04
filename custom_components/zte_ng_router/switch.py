@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.event import async_call_later
 
 from .const import DOMAIN
 from .zte_api import ZteRouterApi
@@ -218,6 +219,7 @@ class ZtePausePollingSwitch(SwitchEntity):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, device_name: str) -> None:
         self.hass = hass
         self._entry_id = entry.entry_id
+        self._unsub_auto_off = None
 
         self._attr_name = "Pause polling (5 min)"
         self._attr_icon = "mdi:pause-circle-outline"
@@ -239,7 +241,29 @@ class ZtePausePollingSwitch(SwitchEntity):
         return pause_until is not None and dt_util.utcnow() < pause_until
 
     async def async_turn_on(self, **kwargs: Any) -> None:
+        # Cancel any existing auto-off timer
+        if self._unsub_auto_off is not None:
+            self._unsub_auto_off()
+            self._unsub_auto_off = None
+
         self._store["pause_until"] = dt_util.utcnow() + timedelta(minutes=5)
+
+        async def _auto_off(_now) -> None:
+            # Auto-resume polling after 5 minutes
+            self._store["pause_until"] = None
+            self._unsub_auto_off = None
+
+            coordinator = self._store.get("coordinator")
+            coordinator_fast = self._store.get("coordinator_fast")
+            if coordinator is not None:
+                await coordinator.async_request_refresh()
+            if coordinator_fast is not None:
+                await coordinator_fast.async_request_refresh()
+
+            self.async_write_ha_state()
+
+        # Schedule auto-off
+        self._unsub_auto_off = async_call_later(self.hass, 5 * 60, _auto_off)
 
         # Request refresh; update functions will skip real polling while paused
         coordinator = self._store.get("coordinator")
@@ -252,6 +276,12 @@ class ZtePausePollingSwitch(SwitchEntity):
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
+        # Cancel auto-off timer if present
+        if self._unsub_auto_off is not None:
+            self._unsub_auto_off()
+            self._unsub_auto_off = None
+
+        # Resume polling immediately
         self._store["pause_until"] = None
 
         coordinator = self._store.get("coordinator")
@@ -262,6 +292,11 @@ class ZtePausePollingSwitch(SwitchEntity):
             await coordinator_fast.async_request_refresh()
 
         self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_auto_off is not None:
+            self._unsub_auto_off()
+            self._unsub_auto_off = None
 
 # ----------------- Cell Lock Switches -----------------
 
