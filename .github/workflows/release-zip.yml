@@ -1,0 +1,36 @@
+name: Build HACS release zip
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build zip (HACS structure)
+        run: |
+          set -euxo pipefail
+          DOMAIN="zte_ng_router"
+          ZIP_NAME="${DOMAIN}.zip"
+
+          rm -f "${ZIP_NAME}"
+          # ZIP muss custom_components/<domain>/... enthalten
+          zip -r "${ZIP_NAME}" "custom_components/${DOMAIN}" \
+            -x "**/__pycache__/**" "**/*.pyc" "**/.DS_Store"
+
+          # Optional: Prüfen, ob ZIP die erwartete Struktur enthält
+          unzip -l "${ZIP_NAME}" | head -n 50
+          unzip -l "${ZIP_NAME}" | grep -q "^ *[0-9].*custom_components/${DOMAIN}/manifest.json$"
+
+      - name: Upload zip to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zte_ng_router.zip
