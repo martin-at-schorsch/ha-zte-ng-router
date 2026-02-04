@@ -1,3 +1,5 @@
+from datetime import datetime
+from homeassistant.util import dt as dt_util
 from __future__ import annotations
 
 import logging
@@ -74,6 +76,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _async_update_data() -> dict[str, Any]:
         """Fetch data from the router."""
+        pause_until: datetime | None = hass.data[DOMAIN][entry.entry_id].get("pause_until")
+        if pause_until is not None and dt_util.utcnow() < pause_until:
+            # Return last known data without polling
+            return coordinator.data or {}
         try:
             data = await api.async_update_all()
             if data is None:
@@ -85,6 +91,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _async_update_fast() -> dict[str, Any]:
         """Fetch fast-changing WAN stats from the router."""
+        pause_until: datetime | None = hass.data[DOMAIN][entry.entry_id].get("pause_until")
+        if pause_until is not None and dt_util.utcnow() < pause_until:
+            # Return last known fast data without polling
+            return coordinator_fast.data or {}
         try:
             fast_data = await api.async_update_fast()
             if fast_data is None:
@@ -118,6 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
         "coordinator_fast": coordinator_fast,
         "name": name,
+        "pause_until": None,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
