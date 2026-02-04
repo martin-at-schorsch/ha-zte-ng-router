@@ -2,6 +2,5 @@
   "name": "ZTE NG Router",
   "render_readme": true,
   "zip_release": true,
-  "content_in_root": true,
   "filename": "zte_ng_router.zip"
 }
