@@ -1,36 +1,20 @@
-name: Build HACS release zip
-
-on:
-  push:
-    tags:
-      - "*"
-
-permissions:
-  contents: write
-
-jobs:
-  build-and-upload:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build zip (HACS structure)
+      - name: Build zip (root files, no folder)
         run: |
           set -euxo pipefail
           DOMAIN="zte_ng_router"
           ZIP_NAME="${DOMAIN}.zip"
 
           rm -f "${ZIP_NAME}"
-          # ZIP muss custom_components/<domain>/... enthalten
-          zip -r "${ZIP_NAME}" "custom_components/${DOMAIN}" \
-            -x "**/__pycache__/**" "**/*.pyc" "**/.DS_Store"
+          rm -rf dist
+          mkdir -p dist
 
-          # Optional: Prüfen, ob ZIP die erwartete Struktur enthält
+          # Kopiere NUR den Inhalt von custom_components/<domain>/ in dist/ (ohne den Ordner selbst)
+          cp -a "custom_components/${DOMAIN}/." "dist/"
+
+          # ZIP soll Root-Files enthalten
+          (cd dist && zip -r "../${ZIP_NAME}" . \
+            -x "**/__pycache__/**" "**/*.pyc" "**/.DS_Store")
+
+          # Check: manifest liegt im ZIP-Root
           unzip -l "${ZIP_NAME}" | head -n 50
-          unzip -l "${ZIP_NAME}" | grep -q "^ *[0-9].*custom_components/${DOMAIN}/manifest.json$"
-
-      - name: Upload zip to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: zte_ng_router.zip
+          unzip -l "${ZIP_NAME}" | grep -q "^ *[0-9].*manifest.json$"
