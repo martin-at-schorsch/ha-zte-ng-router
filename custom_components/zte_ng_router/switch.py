@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Callable
+
+from homeassistant.util import dt as dt_util
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
@@ -130,6 +133,9 @@ async def async_setup_entry(
         for switch_def in SWITCH_DEFS
     ]
 
+    # Pause polling for 5 minutes
+    entities.append(ZtePausePollingSwitch(hass, entry, name))
+
     # Cell lock switches (use text entities for input)
     entities += [
         ZteCellLockSwitch(hass, coordinator, api, entry, name, kind="4g"),
@@ -200,6 +206,62 @@ class ZteActionSwitch(CoordinatorEntity, SwitchEntity):
         else:
             _LOGGER.warning("Failed to turn OFF ZTE switch: %s", self._def.key)
 
+
+class ZtePausePollingSwitch(SwitchEntity):
+    """Switch to pause router polling for 5 minutes.
+
+    While paused, coordinators return last known data and do not call the router API.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, device_name: str) -> None:
+        self.hass = hass
+        self._entry_id = entry.entry_id
+
+        self._attr_name = "Pause polling (5 min)"
+        self._attr_icon = "mdi:pause-circle-outline"
+        self._attr_unique_id = f"{entry.entry_id}_pause_polling"
+
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=device_name,
+            manufacturer="ZTE",
+        )
+
+    @property
+    def _store(self) -> dict:
+        return self.hass.data[DOMAIN][self._entry_id]
+
+    @property
+    def is_on(self) -> bool:
+        pause_until: datetime | None = self._store.get("pause_until")
+        return pause_until is not None and dt_util.utcnow() < pause_until
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        self._store["pause_until"] = dt_util.utcnow() + timedelta(minutes=5)
+
+        # Request refresh; update functions will skip real polling while paused
+        coordinator = self._store.get("coordinator")
+        coordinator_fast = self._store.get("coordinator_fast")
+        if coordinator is not None:
+            await coordinator.async_request_refresh()
+        if coordinator_fast is not None:
+            await coordinator_fast.async_request_refresh()
+
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        self._store["pause_until"] = None
+
+        coordinator = self._store.get("coordinator")
+        coordinator_fast = self._store.get("coordinator_fast")
+        if coordinator is not None:
+            await coordinator.async_request_refresh()
+        if coordinator_fast is not None:
+            await coordinator_fast.async_request_refresh()
+
+        self.async_write_ha_state()
 
 # ----------------- Cell Lock Switches -----------------
 
