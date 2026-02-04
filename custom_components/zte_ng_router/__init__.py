@@ -43,6 +43,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up ZTE NG Router from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
+    # Ensure store exists early (coordinators may refresh before we finish setup)
+    hass.data[DOMAIN].setdefault(
+        entry.entry_id,
+        {"pause_until": None},
+    )
+
     data = entry.data
     options = entry.options
 
@@ -76,7 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _async_update_data() -> dict[str, Any]:
         """Fetch data from the router."""
-        pause_until: datetime | None = hass.data[DOMAIN][entry.entry_id].get("pause_until")
+        pause_until: datetime | None = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("pause_until")
         if pause_until is not None and dt_util.utcnow() < pause_until:
             # Return last known data without polling
             return coordinator.data or {}
@@ -91,7 +97,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _async_update_fast() -> dict[str, Any]:
         """Fetch fast-changing WAN stats from the router."""
-        pause_until: datetime | None = hass.data[DOMAIN][entry.entry_id].get("pause_until")
+        pause_until: datetime | None = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("pause_until")
         if pause_until is not None and dt_util.utcnow() < pause_until:
             # Return last known fast data without polling
             return coordinator_fast.data or {}
@@ -123,13 +129,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
     await coordinator_fast.async_config_entry_first_refresh()
 
-    hass.data[DOMAIN][entry.entry_id] = {
-        "api": api,
-        "coordinator": coordinator,
-        "coordinator_fast": coordinator_fast,
-        "name": name,
-        "pause_until": None,
-    }
+    hass.data[DOMAIN][entry.entry_id].update(
+        {
+            "api": api,
+            "coordinator": coordinator,
+            "coordinator_fast": coordinator_fast,
+            "name": name,
+            "pause_until": hass.data[DOMAIN][entry.entry_id].get("pause_until"),
+        }
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
