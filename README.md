@@ -34,6 +34,8 @@ Feature availability depends on router model and firmware.
 - Radio signal metrics (RSRP, RSRQ, SINR, PCI, bands)  
 - WAN / external IP information  
 - Traffic counters and current throughput  
+- SMS inbox readout (count, unread, storage capacity + latest message preview)  
+- SMS compose + send (via Home Assistant text field and button)  
 - Device information (model, firmware, IMEI/ICCID where available)  
 - Optional controls (e.g. reboot, mobile data on/off)
 
