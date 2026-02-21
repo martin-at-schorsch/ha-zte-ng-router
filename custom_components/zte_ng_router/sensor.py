@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -69,6 +70,12 @@ SENSOR_DEFS = [
     ("wan_status", "WAN Status", None, None, None),
     ("download_rate", "Download Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
     ("upload_rate", "Upload Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
+    ("sms_count", "SMS Count", None, None, None),
+    ("sms_unread_total", "SMS Unread", None, None, None),
+    ("sms_nv_total", "SMS NV Total", None, None, None),
+    ("sms_sim_total", "SMS SIM Total", None, None, None),
+    ("sms_nv_used_total", "SMS NV Used", None, None, None),
+    ("sms_latest", "Latest SMS", None, None, None),
     # Connected time in seconds (session duration) – Home Assistant can display as h/m
     ("connected_time", "Connected Time", SensorDeviceClass.DURATION,
      "s", SensorStateClass.MEASUREMENT),
@@ -127,6 +134,44 @@ def _as_text(value: Any) -> str | None:
     return s
 
 
+def _parse_sms_date(raw: Any) -> str | None:
+    """Parse modem SMS timestamp format: 'yy,mm,dd,HH,MM,SS,+4'."""
+    if raw is None:
+        return None
+    txt = str(raw).strip()
+    if not txt:
+        return None
+    parts = [p.strip() for p in txt.split(",")]
+    if len(parts) != 7:
+        return txt
+    try:
+        year = 2000 + int(parts[0])
+        month = int(parts[1])
+        day = int(parts[2])
+        hour = int(parts[3])
+        minute = int(parts[4])
+        second = int(parts[5])
+        tz_quarters = int(parts[6])
+        tz_delta = timedelta(minutes=abs(tz_quarters) * 15)
+        if tz_quarters < 0:
+            tz_delta = -tz_delta
+        tz = timezone(tz_delta)
+        dt = datetime(year, month, day, hour, minute, second, tzinfo=tz)
+        return dt.isoformat()
+    except (TypeError, ValueError):
+        return txt
+
+
+def _truncate_text(value: Any, max_len: int = 240) -> str | None:
+    """Limit long SMS content so entity state/attributes stay compact."""
+    txt = _as_text(value)
+    if txt is None:
+        return None
+    if len(txt) <= max_len:
+        return txt
+    return f"{txt[:max_len - 3]}..."
+
+
 def _extract_value(data: dict[str, Any], key: str) -> Any:
     """Map a logical key to a value inside the aggregated API data."""
     netinfo = data.get("netinfo") or {}
@@ -135,6 +180,8 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
     device = data.get("device") or {}
     wan = data.get("wan") or {}
     common_config = data.get("common_config") or {}
+    sms = data.get("sms") or {}
+    sms_capacity = sms.get("capacity") or {}
 
     # General
     if key == "network_provider":
@@ -269,6 +316,36 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
             v = wan.get("real_tx_speed")
         return _to_mbit_per_s(v)
 
+    if key == "sms_count":
+        messages = sms.get("messages") or []
+        return len(messages) if isinstance(messages, list) else 0
+
+    if key == "sms_unread_total":
+        v = _as_number(sms_capacity.get("sms_dev_unread_num"))
+        return None if v is None else int(v)
+
+    if key == "sms_nv_total":
+        v = _as_number(sms_capacity.get("sms_nv_total"))
+        return None if v is None else int(v)
+
+    if key == "sms_sim_total":
+        v = _as_number(sms_capacity.get("sms_sim_total"))
+        return None if v is None else int(v)
+
+    if key == "sms_nv_used_total":
+        v = _as_number(sms_capacity.get("sms_nvused_total"))
+        return None if v is None else int(v)
+
+    if key == "sms_latest":
+        latest = sms.get("latest")
+        if not isinstance(latest, dict):
+            return None
+        number = _as_text(latest.get("number")) or "Unknown"
+        sms_date = _parse_sms_date(latest.get("date")) or _as_text(latest.get("date"))
+        if sms_date:
+            return f"{number} @ {sms_date}"
+        return number
+
     if key == "connected_time":
         # Prefer router_get_status.real_time if present, otherwise use zwrt_data.get_wwandst(type=4).real_time
         v = wan.get("real_time")
@@ -371,3 +448,62 @@ class ZteNgRouterSensor(CoordinatorEntity, SensorEntity):
     def native_value(self) -> Any:
         data: dict[str, Any] = self.coordinator.data or {}
         return _extract_value(data, self._key)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self._key not in {
+            "sms_count",
+            "sms_latest",
+            "sms_unread_total",
+            "sms_nv_total",
+            "sms_sim_total",
+            "sms_nv_used_total",
+        }:
+            return None
+
+        data: dict[str, Any] = self.coordinator.data or {}
+        sms = data.get("sms") or {}
+        capacity = sms.get("capacity") or {}
+        messages = sms.get("messages") or []
+        if not isinstance(messages, list):
+            messages = []
+
+        latest = sms.get("latest") if isinstance(sms.get("latest"), dict) else None
+        attrs: dict[str, Any] = {
+            "total_messages": len(messages),
+            "capacity_sms_nv_total": capacity.get("sms_nv_total"),
+            "capacity_sms_sim_total": capacity.get("sms_sim_total"),
+            "capacity_sms_nvused_total": capacity.get("sms_nvused_total"),
+            "capacity_sms_nv_rev_total": capacity.get("sms_nv_rev_total"),
+            "capacity_sms_nv_send_total": capacity.get("sms_nv_send_total"),
+            "capacity_sms_nv_draftbox_total": capacity.get("sms_nv_draftbox_total"),
+            "capacity_sms_sim_rev_total": capacity.get("sms_sim_rev_total"),
+            "capacity_sms_sim_send_total": capacity.get("sms_sim_send_total"),
+            "capacity_sms_sim_draftbox_total": capacity.get("sms_sim_draftbox_total"),
+            "capacity_sms_dev_unread_num": capacity.get("sms_dev_unread_num"),
+            "capacity_sms_sim_unread_num": capacity.get("sms_sim_unread_num"),
+        }
+
+        if latest:
+            attrs["latest_id"] = latest.get("id")
+            attrs["latest_number"] = latest.get("number")
+            attrs["latest_tag"] = latest.get("tag")
+            attrs["latest_date"] = _parse_sms_date(latest.get("date")) or latest.get("date")
+            attrs["latest_text"] = _truncate_text(latest.get("content_decoded"), 500)
+
+        # Keep only a compact preview in attributes.
+        preview: list[dict[str, Any]] = []
+        for msg in messages[:5]:
+            if not isinstance(msg, dict):
+                continue
+            preview.append(
+                {
+                    "id": msg.get("id"),
+                    "number": msg.get("number"),
+                    "date": _parse_sms_date(msg.get("date")) or msg.get("date"),
+                    "tag": msg.get("tag"),
+                    "text": _truncate_text(msg.get("content_decoded"), 140),
+                }
+            )
+        attrs["recent_messages"] = preview
+        return attrs
