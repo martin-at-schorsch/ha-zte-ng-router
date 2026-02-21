@@ -21,6 +21,7 @@ class ZteActionButtonDef:
     name: str
     icon: str
     action: dict[str, Any]
+    kind: str = "action"  # "action" or "send_sms"
 
 
 BUTTON_DEFS: list[ZteActionButtonDef] = [
@@ -28,11 +29,19 @@ BUTTON_DEFS: list[ZteActionButtonDef] = [
         key="restart",
         name="Restart",
         icon="mdi:restart",
+        kind="action",
         action={
             "service": "zwrt_mc.device.manager",
             "method": "device_reboot",
             "params": {"moduleName": "zte_web"},
         },
+    ),
+    ZteActionButtonDef(
+        key="send_sms",
+        name="Send SMS",
+        icon="mdi:send",
+        kind="send_sms",
+        action={},
     ),
     # Add more buttons later by appending more ZteActionButtonDef(...)
 ]
@@ -68,6 +77,8 @@ class ZteActionButton(CoordinatorEntity, ButtonEntity):
         btn_def: ZteActionButtonDef,
     ) -> None:
         super().__init__(coordinator)
+        self.hass = coordinator.hass
+        self._entry_id = entry.entry_id
         self._api = api
         self._btn_def = btn_def
 
@@ -83,6 +94,21 @@ class ZteActionButton(CoordinatorEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         _LOGGER.info("Executing ZTE action button: %s", self._btn_def.key)
+
+        if self._btn_def.kind == "send_sms":
+            data = self.hass.data.get(DOMAIN, {}).get(self._entry_id, {})
+            compose_value = str(data.get("sms_compose") or "")
+            try:
+                number, message = self._api.parse_sms_compose_input(compose_value)
+            except ValueError as exc:
+                _LOGGER.warning("Cannot send SMS, invalid compose value: %s", exc)
+                return
+
+            ok = await self._api.async_send_sms(number=number, message=message)
+            if not ok:
+                _LOGGER.warning("ZTE action button failed: %s", self._btn_def.key)
+            return
+
         ok = await self._api.async_execute_action_def(self._btn_def.action)
         if not ok:
             _LOGGER.warning("ZTE action button failed: %s", self._btn_def.key)
