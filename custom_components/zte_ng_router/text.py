@@ -124,8 +124,9 @@ class ZteTextEntity(CoordinatorEntity, TextEntity):
         else:
             # Keep within HA text entity limits.
             self._attr_native_max = 255
+            # Allow helper default and empty value to avoid state crashes on restore.
             # number,message (e.g. +431234567,Hello)
-            self._attr_pattern = r"^\s*\+?[0-9][0-9 ]*\s*,.+$"
+            self._attr_pattern = r"^$|^(number,message|\s*\+?[0-9][0-9 ]*\s*,.+)$"
 
     def _netinfo(self) -> dict[str, Any]:
         data = self.coordinator.data or {}
@@ -136,7 +137,7 @@ class ZteTextEntity(CoordinatorEntity, TextEntity):
     def native_value(self) -> str:
         if self._kind == "sms":
             data = self.hass.data.get(DOMAIN, {}).get(self._entry_id, {})
-            return str(data.get("sms_compose") or "")
+            return str(data.get("sms_compose") or SMS_COMPOSE_DEFAULT)
 
         netinfo = self._netinfo()
 
