@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, SMS_COMPOSE_DEFAULT
 from .zte_api import ZteRouterApi
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,7 +55,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     api = data["api"]
     coordinator = data["coordinator"]
     name = data.get("name", "ZTE Router")
-    data.setdefault("sms_compose", "")
+    if not data.get("sms_compose"):
+        data["sms_compose"] = SMS_COMPOSE_DEFAULT
 
     async_add_entities([
         ZteTextEntity(hass, coordinator, api, entry, name, desc)
@@ -110,16 +111,19 @@ class ZteTextEntity(CoordinatorEntity, TextEntity):
         # TextEntity settings
         self._attr_mode = "text"
         self._attr_native_min = 0
-        self._attr_native_max = 512
 
         # Enforce exact format
         if self._kind == "4g":
+            self._attr_native_max = 32
             # PCI,EARFCN
             self._attr_pattern = r"^[0-9]+,[0-9]+$"
         elif self._kind == "5g":
+            self._attr_native_max = 32
             # PCI,ARFCN,BAND
             self._attr_pattern = r"^[0-9]+,[0-9]+,[0-9]+$"
         else:
+            # Keep within HA text entity limits.
+            self._attr_native_max = 255
             # number,message (e.g. +431234567,Hello)
             self._attr_pattern = r"^\s*\+?[0-9][0-9 ]*\s*,.+$"
 
