@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, SMS_COMPOSE_DEFAULT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,6 +98,9 @@ class ZteActionButton(CoordinatorEntity, ButtonEntity):
         if self._btn_def.kind == "send_sms":
             data = self.hass.data.get(DOMAIN, {}).get(self._entry_id, {})
             compose_value = str(data.get("sms_compose") or "")
+            if compose_value.strip() == SMS_COMPOSE_DEFAULT:
+                _LOGGER.warning("Cannot send SMS, compose value is still default helper text")
+                return
             try:
                 number, message = self._api.parse_sms_compose_input(compose_value)
             except ValueError as exc:
