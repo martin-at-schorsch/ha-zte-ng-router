@@ -4,6 +4,8 @@ import asyncio
 import logging
 import json
 import time
+import string
+from datetime import datetime
 from typing import Any, Optional
 
 import aiohttp
@@ -16,6 +18,27 @@ _LOGGER = logging.getLogger(__name__)
 
 class ZteRouterApi:
     """Async low-level API wrapper for ZTE 5G routers (e.g. G5TC)."""
+    _GSM7_TABLE_HEX = {
+        "000A", "000C", "000D", "0020", "0021", "0022", "0023", "0024", "0025",
+        "0026", "0027", "0028", "0029", "002A", "002B", "002C", "002D", "002E",
+        "002F", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037",
+        "0038", "0039", "003A", "003B", "003C", "003D", "003E", "003F", "0040",
+        "0041", "0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049",
+        "004A", "004B", "004C", "004D", "004E", "004F", "0050", "0051", "0052",
+        "0053", "0054", "0055", "0056", "0057", "0058", "0059", "005A", "005B",
+        "005C", "005D", "005E", "005F", "0061", "0062", "0063", "0064", "0065",
+        "0066", "0067", "0068", "0069", "006A", "006B", "006C", "006D", "006E",
+        "006F", "0070", "0071", "0072", "0073", "0074", "0075", "0076", "0077",
+        "0078", "0079", "007A", "007B", "007C", "007D", "007E", "00A0", "00A1",
+        "00A3", "00A4", "00A5", "00A7", "00BF", "00C4", "00C5", "00C6", "00C7",
+        "00C9", "00D1", "00D6", "00D8", "00DC", "00DF", "00E0", "00E4", "00E5",
+        "00E6", "00E8", "00E9", "00EC", "00F1", "00F2", "00F6", "00F8", "00F9",
+        "00FC", "0393", "0394", "0398", "039B", "039E", "03A0", "03A3", "03A6",
+        "03A8", "03A9", "20AC",
+    }
+    _GSM7_TABLE_EXT_HEX = {
+        "007B", "007D", "005B", "005D", "007E", "005C", "005E", "20AC", "007C",
+    }
 
     def __init__(
         self,
@@ -114,6 +137,87 @@ class ZteRouterApi:
         """Attach current webtoken cookie to request headers."""
         if self._webtoken:
             headers["Cookie"] = f'webtoken="{self._webtoken}"'
+
+    @staticmethod
+    def _decode_sms_content(raw_content: Any) -> str:
+        """Decode SMS payload returned as hex string (typically UCS2/UTF-16BE)."""
+        if raw_content is None:
+            return ""
+
+        text = str(raw_content).strip()
+        if not text:
+            return ""
+
+        is_hex = len(text) % 2 == 0 and all(c in string.hexdigits for c in text)
+        if not is_hex:
+            return text
+
+        try:
+            payload = bytes.fromhex(text)
+        except ValueError:
+            return text
+
+        for encoding in ("utf-16-be", "utf-8", "latin-1"):
+            try:
+                return payload.decode(encoding).strip("\x00\r\n")
+            except UnicodeDecodeError:
+                continue
+        return text
+
+    @staticmethod
+    def parse_sms_compose_input(value: str) -> tuple[str, str]:
+        """Parse and validate compose value in format 'number,message'."""
+        raw = (value or "").strip()
+        if "," not in raw:
+            raise ValueError("Expected format: number,message")
+
+        number_raw, message_raw = raw.split(",", 1)
+        number = number_raw.strip().replace(" ", "")
+        message = message_raw.strip()
+
+        if not number:
+            raise ValueError("Missing destination number")
+        if not all(c.isdigit() or c == "+" for c in number):
+            raise ValueError("Number may contain only '+' and digits")
+        if number.count("+") > 1 or ("+" in number and not number.startswith("+")):
+            raise ValueError("Invalid '+' placement in number")
+        if not message:
+            raise ValueError("Message must not be empty")
+
+        return number, message
+
+    @staticmethod
+    def _build_sms_time_string() -> str:
+        """Build router expected SMS time string: yy;MM;dd;HH;mm;ss;+TZ."""
+        now = datetime.now().astimezone()
+        offset = now.utcoffset()
+        tz_hours = (offset.total_seconds() / 3600.0) if offset is not None else 0.0
+        if abs(tz_hours - int(tz_hours)) < 1e-9:
+            tz_num = str(int(tz_hours))
+        else:
+            tz_num = str(tz_hours).rstrip("0").rstrip(".")
+        tz_part = f"+{tz_num}" if tz_hours >= 0 else tz_num
+        return (
+            f"{now.strftime('%y')};{now.strftime('%m')};{now.strftime('%d')};"
+            f"{now.strftime('%H')};{now.strftime('%M')};{now.strftime('%S')};{tz_part}"
+        )
+
+    @staticmethod
+    def _get_sms_encode_type(message: str) -> str:
+        """Return modem encode type for SMS."""
+        for ch in message:
+            cp_hex = f"{ord(ch):04X}"
+            if (
+                cp_hex not in ZteRouterApi._GSM7_TABLE_HEX
+                and cp_hex not in ZteRouterApi._GSM7_TABLE_EXT_HEX
+            ):
+                return "UNICODE"
+        return "GSM7_default"
+
+    @staticmethod
+    def _encode_sms_message(message: str) -> str:
+        """Encode SMS message like WebUI helper encodeMessage()."""
+        return message.encode("utf-16-be", errors="ignore").hex().upper()
 
     # --------------------------------------------------------------------
     # Band helpers (simplified)
@@ -747,10 +851,39 @@ class ZteRouterApi:
                 "method": "get_wwandst",
                 "params": {"source_module": "web", "cid": 1, "type": 4},
             },
+            {
+                "service": "zwrt_wms",
+                "method": "zte_libwms_get_sms_data",
+                "params": {
+                    "page": 0,
+                    "data_per_page": 50,
+                    "mem_store": 1,
+                    "tags": 10,
+                    "order_by": "order by id desc",
+                },
+            },
+            {
+                "service": "zwrt_wms",
+                "method": "zwrt_wms_get_wms_capacity",
+                "params": {},
+            },
         ]
 
         results = await self.async_call_ubus_batch(batch_calls)
-        netinfo_res, wlan_res, temp_res, dev_res, wan_res, uci_common_res, odu_led_res, uci_wifi_2g_res, uci_wifi_5g_res, wwandst_res = results
+        (
+            netinfo_res,
+            wlan_res,
+            temp_res,
+            dev_res,
+            wan_res,
+            uci_common_res,
+            odu_led_res,
+            uci_wifi_2g_res,
+            uci_wifi_5g_res,
+            wwandst_res,
+            sms_res,
+            sms_capacity_res,
+        ) = results
 
         wan = wan_res.get("data") or {}
         common_config = (uci_common_res.get("data") or {}).get("values") or {}
@@ -758,6 +891,25 @@ class ZteRouterApi:
         wifi_main_2g = (uci_wifi_2g_res.get("data") or {}).get("values") or {}
         wifi_main_5g = (uci_wifi_5g_res.get("data") or {}).get("values") or {}
         wwandst = wwandst_res.get("data") or {}
+        sms_payload = sms_res.get("data") or {}
+        sms_capacity = sms_capacity_res.get("data") or {}
+        raw_messages = sms_payload.get("messages") or []
+        sms_messages: list[dict[str, Any]] = []
+        if isinstance(raw_messages, list):
+            for msg in raw_messages:
+                if not isinstance(msg, dict):
+                    continue
+                sms_messages.append(
+                    {
+                        "id": msg.get("id"),
+                        "number": msg.get("number"),
+                        "date": msg.get("date"),
+                        "tag": msg.get("tag"),
+                        "mem_store": msg.get("mem_store"),
+                        "content_raw": msg.get("content"),
+                        "content_decoded": self._decode_sms_content(msg.get("content")),
+                    }
+                )
 
         netinfo = netinfo_res.get("data") or {}
         bands_summary, total_bw_mhz = self._compute_bands_and_bw(netinfo)
@@ -775,6 +927,11 @@ class ZteRouterApi:
             "common_config": common_config,
             "wan": wan,
             "wwandst": wwandst,
+            "sms": {
+                "messages": sms_messages,
+                "latest": sms_messages[0] if sms_messages else None,
+                "capacity": sms_capacity if isinstance(sms_capacity, dict) else {},
+            },
             # derived fields
             "bands_summary": bands_summary,
             "total_bw_mhz": total_bw_mhz,
@@ -978,6 +1135,35 @@ class ZteRouterApi:
         if not value:
             raise ValueError("Missing value for enabling 4G cell lock")
         return await self.async_set_4g_cell_lock_from_text(value)
+
+    async def async_send_sms(self, number: str, message: str, *, sms_id: str = "0") -> bool:
+        """Send SMS and wait for command status completion."""
+        payload = {
+            "number": number,
+            "sms_time": self._build_sms_time_string(),
+            "message_body": self._encode_sms_message(message),
+            "id": str(sms_id),
+            "encode_type": self._get_sms_encode_type(message),
+        }
+
+        send_call = self.build_ubus_call("zwrt_wms", "zte_libwms_send_sms", payload)
+        send_res = await self.async_call_ubus(send_call)
+        if not send_res.get("success"):
+            return False
+
+        status_call = self.build_ubus_call("zwrt_wms", "zwrt_wms_get_cmd_status", {"sms_cmd": 4})
+        for _ in range(20):
+            status_res = await self.async_call_ubus(status_call)
+            if status_res.get("success"):
+                status_data = status_res.get("data") or {}
+                cmd_result = str(status_data.get("sms_cmd_status_result"))
+                if cmd_result == "3":
+                    return True
+                if cmd_result == "2":
+                    return False
+            await asyncio.sleep(1)
+
+        return False
 
     async def async_set_5g_cell_lock_enabled(self, enabled: bool, *, value: str | None = None) -> bool:
         """Convenience for HA switch: enable uses `value`, disable sets 0,0,0."""
