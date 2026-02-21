@@ -23,3 +23,6 @@ MAX_SCAN_INTERVAL = 3600        # upper bound (1 hour)
 DEFAULT_FAST_SCAN_INTERVAL = 5  # seconds
 MIN_FAST_SCAN_INTERVAL = 2      # allow near-realtime without overload
 MAX_FAST_SCAN_INTERVAL = 3600     # cap fast polling to 1 minute
+
+# Default helper text for SMS compose input (number,message)
+SMS_COMPOSE_DEFAULT = "number,message"
