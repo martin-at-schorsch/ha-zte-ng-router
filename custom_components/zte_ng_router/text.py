@@ -19,26 +19,33 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, kw_only=True)
-class ZteCellLockTextDescription(TextEntityDescription):
-    """Description for a ZTE Cell Lock text entity."""
+class ZteTextDescription(TextEntityDescription):
+    """Description for ZTE text entities."""
 
-    kind: str  # "4g" or "5g"
+    kind: str  # "4g", "5g", "sms"
 
 
-TEXTS: tuple[ZteCellLockTextDescription, ...] = (
-    ZteCellLockTextDescription(
+TEXTS: tuple[ZteTextDescription, ...] = (
+    ZteTextDescription(
         key="cell_lock_4g_text",
         name="Cell Lock 4G",
         icon="mdi:cellphone-signal",
         entity_category=EntityCategory.CONFIG,
         kind="4g",
     ),
-    ZteCellLockTextDescription(
+    ZteTextDescription(
         key="cell_lock_5g_text",
         name="Cell Lock 5G",
         icon="mdi:cellphone-signal",
         entity_category=EntityCategory.CONFIG,
         kind="5g",
+    ),
+    ZteTextDescription(
+        key="sms_compose_text",
+        name="SMS Compose",
+        icon="mdi:message-text-outline",
+        entity_category=EntityCategory.CONFIG,
+        kind="sms",
     ),
 )
 
@@ -48,14 +55,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     api = data["api"]
     coordinator = data["coordinator"]
     name = data.get("name", "ZTE Router")
+    data.setdefault("sms_compose", "")
 
     async_add_entities([
-        ZteCellLockTextEntity(hass, coordinator, api, entry, name, desc)
+        ZteTextEntity(hass, coordinator, api, entry, name, desc)
         for desc in TEXTS
     ])
 
 
-class ZteCellLockTextEntity(CoordinatorEntity, TextEntity):
+class ZteTextEntity(CoordinatorEntity, TextEntity):
     """Editable cell lock text input.
 
     Behavior:
@@ -75,20 +83,23 @@ class ZteCellLockTextEntity(CoordinatorEntity, TextEntity):
         api: ZteRouterApi,
         entry: ConfigEntry,
         device_name: str,
-        description: ZteCellLockTextDescription,
+        description: ZteTextDescription,
     ) -> None:
         super().__init__(coordinator)
         self.hass = hass
         self.entity_description = description
         self._api = api
         self._entry_id = entry.entry_id
-        self._kind = description.kind  # "4g" or "5g"
+        self._kind = description.kind  # "4g" or "5g" or "sms"
 
         # Persist last user-entered value in memory (until HA restart)
         self._user_value: str | None = None
 
         # Unique IDs must match what switch.py expects
-        self._attr_unique_id = f"{entry.entry_id}_cell_lock_{self._kind}_text"
+        if self._kind == "sms":
+            self._attr_unique_id = f"{entry.entry_id}_sms_compose_text"
+        else:
+            self._attr_unique_id = f"{entry.entry_id}_cell_lock_{self._kind}_text"
 
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -99,15 +110,18 @@ class ZteCellLockTextEntity(CoordinatorEntity, TextEntity):
         # TextEntity settings
         self._attr_mode = "text"
         self._attr_native_min = 0
-        self._attr_native_max = 32
+        self._attr_native_max = 512
 
         # Enforce exact format
         if self._kind == "4g":
             # PCI,EARFCN
             self._attr_pattern = r"^[0-9]+,[0-9]+$"
-        else:
+        elif self._kind == "5g":
             # PCI,ARFCN,BAND
             self._attr_pattern = r"^[0-9]+,[0-9]+,[0-9]+$"
+        else:
+            # number,message (e.g. +431234567,Hello)
+            self._attr_pattern = r"^\s*\+?[0-9][0-9 ]*\s*,.+$"
 
     def _netinfo(self) -> dict[str, Any]:
         data = self.coordinator.data or {}
@@ -116,6 +130,10 @@ class ZteCellLockTextEntity(CoordinatorEntity, TextEntity):
 
     @property
     def native_value(self) -> str:
+        if self._kind == "sms":
+            data = self.hass.data.get(DOMAIN, {}).get(self._entry_id, {})
+            return str(data.get("sms_compose") or "")
+
         netinfo = self._netinfo()
 
         if self._kind == "4g":
@@ -142,8 +160,13 @@ class ZteCellLockTextEntity(CoordinatorEntity, TextEntity):
         # Validate format early (raises ValueError)
         if self._kind == "4g":
             ZteRouterApi.parse_4g_cell_lock_input(value)
-        else:
+        elif self._kind == "5g":
             ZteRouterApi.parse_5g_cell_lock_input(value)
+        else:
+            ZteRouterApi.parse_sms_compose_input(value)
+            self.hass.data[DOMAIN][self._entry_id]["sms_compose"] = value
+            self.async_write_ha_state()
+            return
 
         # Store as last user-entered value (switch applies it)
         self._user_value = value
@@ -153,6 +176,22 @@ class ZteCellLockTextEntity(CoordinatorEntity, TextEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        if self._kind == "sms":
+            value = self.hass.data.get(DOMAIN, {}).get(self._entry_id, {}).get("sms_compose", "")
+            attrs: dict[str, Any] = {
+                "format": "number,message",
+                "example": "+43123456789,Test message",
+                "compose_value": value,
+            }
+            try:
+                number, message = ZteRouterApi.parse_sms_compose_input(str(value))
+                attrs["parsed_number"] = number
+                attrs["message_length"] = len(message)
+                attrs["is_valid"] = True
+            except ValueError:
+                attrs["is_valid"] = False
+            return attrs
+
         netinfo = self._netinfo()
 
         if self._kind == "4g":
