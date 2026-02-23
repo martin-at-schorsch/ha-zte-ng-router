@@ -194,6 +194,12 @@ class ZteActionSwitch(CoordinatorEntity, SwitchEntity):
     def is_on(self) -> bool:
         data = self.coordinator.data or {}
 
+        # Mobile data state in WebUI is derived from WAN connect status, not get_wwaniface.enable.
+        if self._def.key == "mobile_data":
+            wan = data.get("wan") or {}
+            status = str(wan.get("current_wan_status") or wan.get("lte_connect_status") or "")
+            return status in {"ipv4_connected", "ipv6_connected", "ipv4_ipv6_connected"}
+
         # If WiFi master is OFF, force band switches to show OFF
         if self._def.key in ("wifi_main_2g", "wifi_main_5g"):
             wifi_onoff = (data.get("wlan") or {}).get("wifi_onoff")
