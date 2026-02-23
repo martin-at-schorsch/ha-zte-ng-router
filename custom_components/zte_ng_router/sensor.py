@@ -68,7 +68,6 @@ SENSOR_DEFS = [
     ("wan_ipv4", "WAN IPv4", None, None, None),
     ("wan_ipv6", "WAN IPv6", None, None, None),
     ("wan_status", "WAN Status", None, None, None),
-    ("connected_devices", "Connected Devices", None, None, None),
     ("connected_lan_devices", "Connected LAN Devices", None, None, None),
     ("connected_wifi_devices", "Connected WiFi Devices", None, None, None),
     ("download_rate", "Download Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
@@ -316,17 +315,6 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
 
     if key == "wan_status":
         return _as_text(wan.get("mwan_wanlan1_status")) or _as_text(wan.get("current_wan_status"))
-
-    if key == "connected_devices":
-        # Prefer explicit total count from router_get_user_list_num.
-        total = _as_number(user_list_num.get("access_total_num"))
-        if total is not None:
-            return int(total)
-        lan_num = _as_number(user_list_num.get("lan_num"))
-        wlan_num = _as_number(user_list_num.get("wireless_num"))
-        if lan_num is None and wlan_num is None:
-            return None
-        return int((lan_num or 0) + (wlan_num or 0))
 
     if key == "connected_lan_devices":
         lan_num = _as_number(user_list_num.get("lan_num"))
