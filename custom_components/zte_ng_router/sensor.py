@@ -69,6 +69,8 @@ SENSOR_DEFS = [
     ("wan_ipv6", "WAN IPv6", None, None, None),
     ("wan_status", "WAN Status", None, None, None),
     ("connected_devices", "Connected Devices", None, None, None),
+    ("connected_lan_devices", "Connected LAN Devices", None, None, None),
+    ("connected_wifi_devices", "Connected WiFi Devices", None, None, None),
     ("download_rate", "Download Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
     ("upload_rate", "Upload Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
     ("monthly_download_mb", "Monthly Download", None, "MB", SensorStateClass.MEASUREMENT),
@@ -131,7 +133,7 @@ def _bytes_to_mb_decimal(value: Any) -> Any:
         return None
     if v < 0:
         return None
-    return round(v / 1_000_000.0, 2)
+    return int(v / 1_000_000.0)
 
 
 def _as_text(value: Any) -> str | None:
@@ -325,6 +327,18 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
         if lan_num is None and wlan_num is None:
             return None
         return int((lan_num or 0) + (wlan_num or 0))
+
+    if key == "connected_lan_devices":
+        lan_num = _as_number(user_list_num.get("lan_num"))
+        if lan_num is None:
+            return None
+        return int(lan_num)
+
+    if key == "connected_wifi_devices":
+        wlan_num = _as_number(user_list_num.get("wireless_num"))
+        if wlan_num is None:
+            return None
+        return int(wlan_num)
 
     if key == "download_rate":
         # Live rate comes from zwrt_data.get_wwandst(type=4) on this firmware
