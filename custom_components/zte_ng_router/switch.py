@@ -115,6 +115,25 @@ SWITCH_DEFS: list[ZteActionSwitchDef] = [
             "params": {"main_5g": {"disabled": "1"}},
         },
     ),
+    ZteActionSwitchDef(
+        key="mobile_data",
+        name="Mobile Data",
+        icon="mdi:signal-cellular-3",
+        state_key="enable",
+        on_value="1",
+        off_value="0",
+        get_path=lambda data: data.get("wwaniface", {}),
+        turn_on={
+            "service": "zwrt_data",
+            "method": "set_wwaniface",
+            "params": {"source_module": "web", "cid": 1, "enable": 1},
+        },
+        turn_off={
+            "service": "zwrt_data",
+            "method": "set_wwaniface",
+            "params": {"source_module": "web", "cid": 1, "enable": 0},
+        },
+    ),
     # weitere Switches einfach hier anhängen
 ]
 
