@@ -68,8 +68,11 @@ SENSOR_DEFS = [
     ("wan_ipv4", "WAN IPv4", None, None, None),
     ("wan_ipv6", "WAN IPv6", None, None, None),
     ("wan_status", "WAN Status", None, None, None),
+    ("connected_devices", "Connected Devices", None, None, None),
     ("download_rate", "Download Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
     ("upload_rate", "Upload Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
+    ("monthly_download_mb", "Monthly Download", None, "MB", SensorStateClass.MEASUREMENT),
+    ("monthly_upload_mb", "Monthly Upload", None, "MB", SensorStateClass.MEASUREMENT),
     ("sms_count", "SMS Count", None, None, None),
     ("sms_unread_total", "SMS Unread", None, None, None),
     ("sms_nv_total", "SMS NV Total", None, None, None),
@@ -119,6 +122,16 @@ def _to_mbit_per_s(value: Any) -> Any:
     if v is None:
         return None
     return round((v * 8.0) / 1_000_000.0, 2)
+
+
+def _bytes_to_mb_decimal(value: Any) -> Any:
+    """Convert byte counter to MB (decimal, 1 MB = 1,000,000 bytes)."""
+    v = _as_number(value)
+    if v is None:
+        return None
+    if v < 0:
+        return None
+    return round(v / 1_000_000.0, 2)
 
 
 def _as_text(value: Any) -> str | None:
@@ -179,6 +192,8 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
     thermal = data.get("thermal") or {}
     device = data.get("device") or {}
     wan = data.get("wan") or {}
+    user_list_num = data.get("user_list_num") or {}
+    wwandst_monthly = data.get("wwandst_monthly") or {}
     common_config = data.get("common_config") or {}
     sms = data.get("sms") or {}
     sms_capacity = sms.get("capacity") or {}
@@ -300,6 +315,17 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
     if key == "wan_status":
         return _as_text(wan.get("mwan_wanlan1_status")) or _as_text(wan.get("current_wan_status"))
 
+    if key == "connected_devices":
+        # Prefer explicit total count from router_get_user_list_num.
+        total = _as_number(user_list_num.get("access_total_num"))
+        if total is not None:
+            return int(total)
+        lan_num = _as_number(user_list_num.get("lan_num"))
+        wlan_num = _as_number(user_list_num.get("wireless_num"))
+        if lan_num is None and wlan_num is None:
+            return None
+        return int((lan_num or 0) + (wlan_num or 0))
+
     if key == "download_rate":
         # Live rate comes from zwrt_data.get_wwandst(type=4) on this firmware
         wwandst = data.get("wwandst") or {}
@@ -315,6 +341,20 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
         if v in (None, "", "-"):
             v = wan.get("real_tx_speed")
         return _to_mbit_per_s(v)
+
+    if key == "monthly_download_mb":
+        # Monthly total received bytes from zwrt_data.get_wwandst(type=2)
+        v = wwandst_monthly.get("month_rx_bytes")
+        if v in (None, "", "-"):
+            v = wan.get("month_rx_bytes")
+        return _bytes_to_mb_decimal(v)
+
+    if key == "monthly_upload_mb":
+        # Monthly total transmitted bytes from zwrt_data.get_wwandst(type=2)
+        v = wwandst_monthly.get("month_tx_bytes")
+        if v in (None, "", "-"):
+            v = wan.get("month_tx_bytes")
+        return _bytes_to_mb_decimal(v)
 
     if key == "sms_count":
         messages = sms.get("messages") or []
