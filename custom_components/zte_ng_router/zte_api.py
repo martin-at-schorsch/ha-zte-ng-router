@@ -842,6 +842,7 @@ class ZteRouterApi:
             {"service": "zwrt_bsp.thermal", "method": "get_cpu_temp"},
             {"service": "zwrt_mc.device.manager", "method": "get_device_info"},
             {"service": "zwrt_router.api", "method": "router_get_status"},
+            {"service": "zwrt_router.api", "method": "router_get_user_list_num"},
             {"service": "uci", "method": "get", "params": {"config": "zwrt_common_info", "section": "common_config"}},
             {"service": "zwrt_led", "method": "get_ODU_switch_state", "params": {}},
             {"service": "uci", "method": "get", "params": {"config": "wireless", "section": "main_2g"}},
@@ -850,6 +851,16 @@ class ZteRouterApi:
                 "service": "zwrt_data",
                 "method": "get_wwandst",
                 "params": {"source_module": "web", "cid": 1, "type": 4},
+            },
+            {
+                "service": "zwrt_data",
+                "method": "get_wwaniface",
+                "params": {"source_module": "web", "cid": 1},
+            },
+            {
+                "service": "zwrt_data",
+                "method": "get_wwandst",
+                "params": {"source_module": "web", "cid": 1, "type": 2},
             },
             {
                 "service": "zwrt_wms",
@@ -876,21 +887,27 @@ class ZteRouterApi:
             temp_res,
             dev_res,
             wan_res,
+            user_list_num_res,
             uci_common_res,
             odu_led_res,
             uci_wifi_2g_res,
             uci_wifi_5g_res,
             wwandst_res,
+            wwaniface_res,
+            wwandst_monthly_res,
             sms_res,
             sms_capacity_res,
         ) = results
 
         wan = wan_res.get("data") or {}
+        user_list_num = user_list_num_res.get("data") or {}
         common_config = (uci_common_res.get("data") or {}).get("values") or {}
         odu_led = odu_led_res.get("data") or {}
         wifi_main_2g = (uci_wifi_2g_res.get("data") or {}).get("values") or {}
         wifi_main_5g = (uci_wifi_5g_res.get("data") or {}).get("values") or {}
         wwandst = wwandst_res.get("data") or {}
+        wwaniface = wwaniface_res.get("data") or {}
+        wwandst_monthly = wwandst_monthly_res.get("data") or {}
         sms_payload = sms_res.get("data") or {}
         sms_capacity = sms_capacity_res.get("data") or {}
         raw_messages = sms_payload.get("messages") or []
@@ -926,7 +943,10 @@ class ZteRouterApi:
             "device": dev_res.get("data"),
             "common_config": common_config,
             "wan": wan,
+            "user_list_num": user_list_num,
             "wwandst": wwandst,
+            "wwaniface": wwaniface,
+            "wwandst_monthly": wwandst_monthly,
             "sms": {
                 "messages": sms_messages,
                 "latest": sms_messages[0] if sms_messages else None,
