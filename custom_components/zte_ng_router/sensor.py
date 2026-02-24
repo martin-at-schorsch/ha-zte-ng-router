@@ -8,7 +8,7 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import UnitOfInformation, UnitOfTemperature
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -72,8 +72,8 @@ SENSOR_DEFS = [
     ("connected_wifi_devices", "Connected WiFi Devices", None, None, None),
     ("download_rate", "Download Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
     ("upload_rate", "Upload Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
-    ("monthly_download_mb", "Monthly Download", None, "MB", SensorStateClass.MEASUREMENT),
-    ("monthly_upload_mb", "Monthly Upload", None, "MB", SensorStateClass.MEASUREMENT),
+    ("monthly_download_mb", "Monthly Download", SensorDeviceClass.DATA_SIZE, UnitOfInformation.BYTES, SensorStateClass.MEASUREMENT),
+    ("monthly_upload_mb", "Monthly Upload", SensorDeviceClass.DATA_SIZE, UnitOfInformation.BYTES, SensorStateClass.MEASUREMENT),
     ("sms_count", "SMS Count", None, None, None),
     ("sms_unread_total", "SMS Unread", None, None, None),
     ("sms_nv_total", "SMS NV Total", None, None, None),
@@ -125,14 +125,14 @@ def _to_mbit_per_s(value: Any) -> Any:
     return round((v * 8.0) / 1_000_000.0, 2)
 
 
-def _bytes_to_mb_decimal(value: Any) -> Any:
-    """Convert byte counter to MB (decimal, 1 MB = 1,000,000 bytes)."""
+def _bytes_counter(value: Any) -> Any:
+    """Normalize byte counter to integer bytes."""
     v = _as_number(value)
     if v is None:
         return None
     if v < 0:
         return None
-    return int(v / 1_000_000.0)
+    return int(v)
 
 
 def _as_text(value: Any) -> str | None:
@@ -349,14 +349,14 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
         v = wwandst_monthly.get("month_rx_bytes")
         if v in (None, "", "-"):
             v = wan.get("month_rx_bytes")
-        return _bytes_to_mb_decimal(v)
+        return _bytes_counter(v)
 
     if key == "monthly_upload_mb":
         # Monthly total transmitted bytes from zwrt_data.get_wwandst(type=2)
         v = wwandst_monthly.get("month_tx_bytes")
         if v in (None, "", "-"):
             v = wan.get("month_tx_bytes")
-        return _bytes_to_mb_decimal(v)
+        return _bytes_counter(v)
 
     if key == "sms_count":
         messages = sms.get("messages") or []
