@@ -8,7 +8,7 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfInformation, UnitOfTemperature
+from homeassistant.const import UnitOfDataRate, UnitOfInformation, UnitOfTemperature
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -33,7 +33,7 @@ SENSOR_DEFS = [
     ("main5g_ssid", "WiFi 5 GHz SSID", None, None, None),
 
     # Net identifiers / locks
-    ("signalbar", "Signal Bars", None, None, None),
+    ("signalbar", "Signal Bars", None, None, SensorStateClass.MEASUREMENT),
     ("rmcc", "RMCC", None, None, None),
     ("rmnc", "RMNC", None, None, None),
     ("nr5g_cell_id", "NR5G Cell ID", None, None, None),
@@ -68,17 +68,17 @@ SENSOR_DEFS = [
     ("wan_ipv4", "WAN IPv4", None, None, None),
     ("wan_ipv6", "WAN IPv6", None, None, None),
     ("wan_status", "WAN Status", None, None, None),
-    ("connected_lan_devices", "Connected LAN Devices", None, None, None),
-    ("connected_wifi_devices", "Connected WiFi Devices", None, None, None),
-    ("download_rate", "Download Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
-    ("upload_rate", "Upload Rate", None, "Mbit/s", SensorStateClass.MEASUREMENT),
+    ("connected_lan_devices", "Connected LAN Devices", None, None, SensorStateClass.MEASUREMENT),
+    ("connected_wifi_devices", "Connected WiFi Devices", None, None, SensorStateClass.MEASUREMENT),
+    ("download_rate", "Download Rate", SensorDeviceClass.DATA_RATE, UnitOfDataRate.BITS_PER_SECOND, SensorStateClass.MEASUREMENT),
+    ("upload_rate", "Upload Rate", SensorDeviceClass.DATA_RATE, UnitOfDataRate.BITS_PER_SECOND, SensorStateClass.MEASUREMENT),
     ("monthly_download_mb", "Monthly Download", SensorDeviceClass.DATA_SIZE, UnitOfInformation.BYTES, SensorStateClass.MEASUREMENT),
     ("monthly_upload_mb", "Monthly Upload", SensorDeviceClass.DATA_SIZE, UnitOfInformation.BYTES, SensorStateClass.MEASUREMENT),
-    ("sms_count", "SMS Count", None, None, None),
-    ("sms_unread_total", "SMS Unread", None, None, None),
-    ("sms_nv_total", "SMS NV Total", None, None, None),
-    ("sms_sim_total", "SMS SIM Total", None, None, None),
-    ("sms_nv_used_total", "SMS NV Used", None, None, None),
+    ("sms_count", "SMS Count", None, None, SensorStateClass.MEASUREMENT),
+    ("sms_unread_total", "SMS Unread", None, None, SensorStateClass.MEASUREMENT),
+    ("sms_nv_total", "SMS NV Total", None, None, SensorStateClass.MEASUREMENT),
+    ("sms_sim_total", "SMS SIM Total", None, None, SensorStateClass.MEASUREMENT),
+    ("sms_nv_used_total", "SMS NV Used", None, None, SensorStateClass.MEASUREMENT),
     ("sms_latest", "Latest SMS", None, None, None),
     # Connected time in seconds (session duration) – Home Assistant can display as h/m
     ("connected_time", "Connected Time", SensorDeviceClass.DURATION,
@@ -113,16 +113,15 @@ def _as_number(value: Any) -> Any:
             return None
     return None
 
-def _to_mbit_per_s(value: Any) -> Any:
-    """Convert router speed value to Mbit/s.
+def _to_bit_per_s(value: Any) -> Any:
+    """Convert router speed value to bit/s.
 
-    ZTE's web UI converts current rates to Mbit/s via: value * 8 / 1e6.
-    We keep the sensor numeric; HA will format/display accordingly.
+    Router values are byte/s. Convert to bit/s for HA data_rate sensors.
     """
     v = _as_number(value)
     if v is None:
         return None
-    return round((v * 8.0) / 1_000_000.0, 2)
+    return int(v * 8.0)
 
 
 def _bytes_counter(value: Any) -> Any:
@@ -228,7 +227,10 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
     # Net identifiers / locks (from netinfo)
     if key == "signalbar":
         v = _as_number(netinfo.get("signalbar"))
-        return None if v is None else int(v)
+        if v is None:
+            return None
+        # Router typically reports 0..5 bars; clamp to keep a stable range.
+        return max(0, min(5, int(v)))
 
     if key == "rmcc":
         v = netinfo.get("rmcc")
@@ -334,7 +336,7 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
         v = wwandst.get("real_rx_speed")
         if v in (None, "", "-"):
             v = wan.get("real_rx_speed")
-        return _to_mbit_per_s(v)
+        return _to_bit_per_s(v)
 
     if key == "upload_rate":
         # Live rate comes from zwrt_data.get_wwandst(type=4) on this firmware
@@ -342,7 +344,7 @@ def _extract_value(data: dict[str, Any], key: str) -> Any:
         v = wwandst.get("real_tx_speed")
         if v in (None, "", "-"):
             v = wan.get("real_tx_speed")
-        return _to_mbit_per_s(v)
+        return _to_bit_per_s(v)
 
     if key == "monthly_download_mb":
         # Monthly total received bytes from zwrt_data.get_wwandst(type=2)
