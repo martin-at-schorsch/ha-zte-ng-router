@@ -8,9 +8,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build-and-upload:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,6 +23,7 @@ jobs:
       - name: Build zip (root files, no folder)
         run: |
           set -euxo pipefail
+
           DOMAIN="zte_ng_router"
           ZIP_NAME="${DOMAIN}.zip"
 
@@ -25,17 +31,20 @@ jobs:
           rm -rf dist
           mkdir -p dist
 
-          # Put integration files directly in ZIP root (no top-level folder)
+          # Put integration files directly in ZIP root
           cp -a "custom_components/${DOMAIN}/." "dist/"
 
           (cd dist && zip -r "../${ZIP_NAME}" . \
             -x "**/__pycache__/**" "**/*.pyc" "**/.DS_Store")
 
-          # Sanity checks
+          # Sanity check: manifest.json must exist in ZIP root
           unzip -l "${ZIP_NAME}" | head -n 50
           unzip -l "${ZIP_NAME}" | grep -q "^ *[0-9].*manifest.json$"
 
-      - name: Upload zip to GitHub Release
+      - name: Upload zip to GitHub Release (current tag only)
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           files: zte_ng_router.zip
+          token: ${{ secrets.GITHUB_TOKEN }}
