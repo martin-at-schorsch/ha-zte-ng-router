@@ -570,6 +570,7 @@ class ZteRouterApi:
         self,
         calls: list[dict[str, Any]],
         *,
+        batch_name: str | None = None,
         retry_on_connreset_104: bool = True,
         retry_on_access_denied: bool = True,
     ) -> list[dict[str, Any]]:
@@ -609,7 +610,7 @@ class ZteRouterApi:
         try:
             sid_preview = (session_id or "")[:8]
             _LOGGER.debug(
-                "ubus batch call: n=%s sid=%s", len(req), sid_preview
+                "ubus batch call: name=%s n=%s sid=%s", batch_name or "-", len(req), sid_preview
             )
             headers = dict(self._base_headers)
             headers["Z-Mode"] = "1"
@@ -649,11 +650,18 @@ class ZteRouterApi:
                         await self._async_ensure_logged_in(force=True)
                         return await self.async_call_ubus_batch(
                             calls,
+                            batch_name=batch_name,
                             retry_on_connreset_104=retry_on_connreset_104,
                             retry_on_access_denied=False,
                         )
         except Exception as exc:
-            _LOGGER.warning("HTTP error while calling ubus batch: %s", exc)
+            exc_name = type(exc).__name__
+            _LOGGER.warning(
+                "HTTP error while calling ubus batch '%s': %s: %s",
+                batch_name or "-",
+                exc_name,
+                exc,
+            )
 
             # Handle TCP reset-by-peer (errno 104) with a single retry
             if retry_on_connreset_104 and self._is_conn_reset_104(exc):
@@ -667,6 +675,7 @@ class ZteRouterApi:
                     return [{"success": False, "data": None, "error": {"message": str(exc2)}} for _ in calls]
                 return await self.async_call_ubus_batch(
                     calls,
+                    batch_name=batch_name,
                     retry_on_connreset_104=False,
                     retry_on_access_denied=retry_on_access_denied,
                 )
@@ -701,6 +710,26 @@ class ZteRouterApi:
                 out[idx] = {"success": False, "data": None, "error": {"message": "nonzero_result"}}
 
         return out
+
+    @staticmethod
+    def _log_batch_failures(
+        batch_name: str,
+        calls: list[dict[str, Any]],
+        results: list[dict[str, Any]],
+    ) -> None:
+        """Log failed calls in a named batch without aborting the whole update."""
+        failed: list[str] = []
+        for call, result in zip(calls, results, strict=False):
+            if result.get("success"):
+                continue
+            failed.append(f"{call.get('service')}.{call.get('method')}")
+
+        if failed:
+            _LOGGER.warning(
+                "ubus batch '%s' had failed calls: %s",
+                batch_name,
+                ", ".join(failed),
+            )
     
     def build_ubus_call(
         self,
@@ -835,8 +864,7 @@ class ZteRouterApi:
     async def async_update_all(self) -> dict[str, Any]:
         """Fetch all relevant router data for Home Assistant in one go."""
 
-        # One authenticated batch request (public endpoints also work with an authenticated SID)
-        batch_calls = [
+        core_batch_calls = [
             {"service": "zte_nwinfo_api", "method": "nwinfo_get_netinfo"},
             {"service": "zwrt_wlan", "method": "report"},
             {"service": "zwrt_bsp.thermal", "method": "get_cpu_temp"},
@@ -857,11 +885,15 @@ class ZteRouterApi:
                 "method": "get_wwaniface",
                 "params": {"source_module": "web", "cid": 1},
             },
+        ]
+        monthly_batch_calls = [
             {
                 "service": "zwrt_data",
                 "method": "get_wwandst",
                 "params": {"source_module": "web", "cid": 1, "type": 2},
             },
+        ]
+        sms_batch_calls = [
             {
                 "service": "zwrt_wms",
                 "method": "zte_libwms_get_sms_data",
@@ -880,7 +912,15 @@ class ZteRouterApi:
             },
         ]
 
-        results = await self.async_call_ubus_batch(batch_calls)
+        core_results = await self.async_call_ubus_batch(core_batch_calls, batch_name="core")
+        monthly_results = await self.async_call_ubus_batch(monthly_batch_calls, batch_name="monthly")
+        sms_results = await self.async_call_ubus_batch(sms_batch_calls, batch_name="sms")
+
+        self._log_batch_failures("core", core_batch_calls, core_results)
+        self._log_batch_failures("monthly", monthly_batch_calls, monthly_results)
+        self._log_batch_failures("sms", sms_batch_calls, sms_results)
+
+        results = [*core_results, *monthly_results, *sms_results]
         (
             netinfo_res,
             wlan_res,
