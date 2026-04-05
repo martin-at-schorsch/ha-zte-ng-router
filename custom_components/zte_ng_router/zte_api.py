@@ -542,7 +542,8 @@ class ZteRouterApi:
             "mwan_wanlan1_wan_ipaddr", "mwan_wanlan1_link_state", "mwan_wanlan1_ipv6_wan_ipaddr",
             "ppp_status", "mc_modem_main_state", "RadioOff", "wan_ipaddr", "ipv6_wan_ipaddr",
             "hardware_version", "wa_inner_version",
-            "wifi_chip_temp", "system_uptime", "device_uptime",
+            "wifi_chip_temp", "pm_sensor_mdm", "pm_modem_5g", "therm_pa_level", "therm_tj_level",
+            "system_uptime", "device_uptime",
             "flux_realtime_rx_thrpt", "flux_realtime_tx_thrpt", "flux_realtime_time",
             "flux_monthly_rx_bytes", "flux_monthly_tx_bytes",
         ]
@@ -584,6 +585,7 @@ class ZteRouterApi:
             "nr5g_cell_id": main.get("network_Z5g_CELL_ID"),
             "lte_pci": main.get("lte_pci"),
             "lte_action_channel": main.get("wan_active_channel") or main.get("network_lte_ca_pcell_arfcn"),
+            "lte_action_band": main.get("network_lte_ca_pcell_band"),
             "lte_bandwidth": main.get("network_lte_ca_pcell_bandwidth"),
             "lte_rsrp": main.get("network_lte_rsrp"),
             "lte_rsrq": main.get("lte_rsrq"),
@@ -591,6 +593,7 @@ class ZteRouterApi:
             "lte_rssi": main.get("lte_rssi"),
             "nr5g_pci": main.get("network_Z5g_PCI"),
             "nr5g_action_channel": main.get("nr5g_action_channel"),
+            "nr5g_action_band": main.get("nr5g_action_band"),
             "nr5g_bandwidth": main.get("nr5g_nsa_bandwidth"),
             "nr5g_rsrp": main.get("Z5g_rsrp"),
             "nr5g_rsrq": main.get("Z5g_rsrq"),
@@ -605,8 +608,10 @@ class ZteRouterApi:
         wan: dict[str, Any] = {
             "mwan_wanlan1_wan_ipaddr": main.get("mwan_wanlan1_wan_ipaddr") or main.get("wan_ipaddr"),
             "mwan_wanlan1_ipv6_wan_ipaddr": main.get("mwan_wanlan1_ipv6_wan_ipaddr") or main.get("ipv6_wan_ipaddr"),
+            "mwan_wanlan1_link_state": main.get("mwan_wanlan1_link_state"),
             "current_wan_status": main.get("ppp_status"),
             "lte_connect_status": main.get("mc_modem_main_state"),
+            "radio_off": main.get("RadioOff"),
             "real_rx_speed": main.get("flux_realtime_rx_thrpt"),
             "real_tx_speed": main.get("flux_realtime_tx_thrpt"),
             "real_time": main.get("flux_realtime_time"),
@@ -694,8 +699,16 @@ class ZteRouterApi:
             odu_led = {"switch": str(led_raw)}
 
         thermal: dict[str, Any] | None = None
-        if main.get("wifi_chip_temp") not in (None, "", "-"):
-            thermal = {"cpuss_temp": main.get("wifi_chip_temp")}
+        if any(main.get(k) not in (None, "", "-") for k in (
+            "wifi_chip_temp", "pm_sensor_mdm", "pm_modem_5g", "therm_pa_level", "therm_tj_level"
+        )):
+            thermal = {
+                "cpuss_temp": main.get("wifi_chip_temp"),
+                "pm_sensor_mdm": main.get("pm_sensor_mdm"),
+                "pm_modem_5g": main.get("pm_modem_5g"),
+                "therm_pa_level": main.get("therm_pa_level"),
+                "therm_tj_level": main.get("therm_tj_level"),
+            }
 
         device: dict[str, Any] | None = None
         uptime = main.get("system_uptime") or main.get("device_uptime")
