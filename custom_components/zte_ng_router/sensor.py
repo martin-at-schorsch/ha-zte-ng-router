@@ -107,6 +107,18 @@ def _as_number(value: Any) -> Any:
         v = value.strip()
         if v == "" or v == "-":
             return None
+        vl = v.lower()
+        # Some firmwares return numeric values in hex (e.g. LTE PCI as "7c").
+        if vl.startswith("0x"):
+            try:
+                return int(vl, 16)
+            except ValueError:
+                return None
+        if "." not in v and any(c in "abcdefABCDEF" for c in v):
+            try:
+                return int(v, 16)
+            except ValueError:
+                return None
         try:
             return float(v)
         except ValueError:

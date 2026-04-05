@@ -527,6 +527,7 @@ class ZteRouterApi:
         # Define which fields we need (grouped for documentation)
         basic_fields = [
             "network_type", "network_signalbar", "network_provider_fullname",
+            "lac_code", "lte_band_lock", "gw_band_lock",
             "lte_pci", "lte_rssi", "lte_rsrq", "lte_snr", "network_lte_rsrp",
             "Z5g_rsrp", "Z5g_rsrq", "Z5g_snr", "Z5g_SINR", "Z5g_rssi",
             "network_Z5g_PCI", "network_Z5g_CELL_ID", "nr5g_action_channel",
@@ -535,10 +536,13 @@ class ZteRouterApi:
             "nr5g_action_band", "nr5g_nsa_bandwidth",
             "network_rmcc", "network_rmnc",
             "wifi_onoff_state", "wifi_chip1_ssid1_ssid", "wifi_chip2_ssid1_ssid",
+            "wifi_chip1_ssid1_switch_onoff", "wifi_chip2_ssid1_switch_onoff",
             "wifi_chip1_ssid1_access_sta_num", "wifi_chip2_ssid1_access_sta_num",
+            "ODU_led_switch",
             "mwan_wanlan1_wan_ipaddr", "mwan_wanlan1_link_state", "mwan_wanlan1_ipv6_wan_ipaddr",
-            "ppp_status", "wan_ipaddr", "ipv6_wan_ipaddr",
+            "ppp_status", "mc_modem_main_state", "RadioOff", "wan_ipaddr", "ipv6_wan_ipaddr",
             "hardware_version", "wa_inner_version",
+            "wifi_chip_temp", "system_uptime", "device_uptime",
             "flux_realtime_rx_thrpt", "flux_realtime_tx_thrpt", "flux_realtime_time",
             "flux_monthly_rx_bytes", "flux_monthly_tx_bytes",
         ]
@@ -574,6 +578,9 @@ class ZteRouterApi:
             "signalbar": main.get("network_signalbar"),
             "rmcc": main.get("network_rmcc"),
             "rmnc": main.get("network_rmnc"),
+            "lac_code": main.get("lac_code"),
+            "lte_band_lock": main.get("lte_band_lock"),
+            "gw_band_lock": main.get("gw_band_lock"),
             "nr5g_cell_id": main.get("network_Z5g_CELL_ID"),
             "lte_pci": main.get("lte_pci"),
             "lte_action_channel": main.get("wan_active_channel") or main.get("network_lte_ca_pcell_arfcn"),
@@ -599,6 +606,7 @@ class ZteRouterApi:
             "mwan_wanlan1_wan_ipaddr": main.get("mwan_wanlan1_wan_ipaddr") or main.get("wan_ipaddr"),
             "mwan_wanlan1_ipv6_wan_ipaddr": main.get("mwan_wanlan1_ipv6_wan_ipaddr") or main.get("ipv6_wan_ipaddr"),
             "current_wan_status": main.get("ppp_status"),
+            "lte_connect_status": main.get("mc_modem_main_state"),
             "real_rx_speed": main.get("flux_realtime_rx_thrpt"),
             "real_tx_speed": main.get("flux_realtime_tx_thrpt"),
             "real_time": main.get("flux_realtime_time"),
@@ -667,20 +675,47 @@ class ZteRouterApi:
                 "content_decoded": self._decode_sms_content(msg.get("content")),
             })
 
+        wifi_2g_raw = main.get("wifi_chip1_ssid1_switch_onoff")
+        wifi_5g_raw = main.get("wifi_chip2_ssid1_switch_onoff")
+        led_raw = main.get("ODU_led_switch")
+        ppp_status = str(main.get("ppp_status") or "").strip().lower()
+        wwan_enable = "1" if ppp_status in {"ppp_connected", "ipv4_connected", "ipv6_connected", "ipv4_ipv6_connected", "connected"} else "0"
+
+        wifi_main_2g: dict[str, Any] = {}
+        if str(wifi_2g_raw) in {"0", "1"}:
+            wifi_main_2g = {"disabled": "0" if str(wifi_2g_raw) == "1" else "1"}
+
+        wifi_main_5g: dict[str, Any] = {}
+        if str(wifi_5g_raw) in {"0", "1"}:
+            wifi_main_5g = {"disabled": "0" if str(wifi_5g_raw) == "1" else "1"}
+
+        odu_led: dict[str, Any] = {}
+        if str(led_raw) in {"0", "1"}:
+            odu_led = {"switch": str(led_raw)}
+
+        thermal: dict[str, Any] | None = None
+        if main.get("wifi_chip_temp") not in (None, "", "-"):
+            thermal = {"cpuss_temp": main.get("wifi_chip_temp")}
+
+        device: dict[str, Any] | None = None
+        uptime = main.get("system_uptime") or main.get("device_uptime")
+        if uptime not in (None, "", "-"):
+            device = {"device_uptime": uptime}
+
         bands_summary, total_bw_mhz = self._compute_bands_and_bw(netinfo)
         return {
             "netinfo": netinfo,
             "wlan": wlan,
-            "wifi_main_2g": {},
-            "wifi_main_5g": {},
-            "odu_led": {},
-            "thermal": None,
-            "device": None,
+            "wifi_main_2g": wifi_main_2g,
+            "wifi_main_5g": wifi_main_5g,
+            "odu_led": odu_led,
+            "thermal": thermal,
+            "device": device,
             "common_config": common_config,
             "wan": wan,
             "user_list_num": user_list_num,
             "wwandst": wwandst,
-            "wwaniface": {},
+            "wwaniface": {"enable": wwan_enable},
             "wwandst_monthly": wwandst_monthly,
             "sms": {
                 "messages": sms_messages,
