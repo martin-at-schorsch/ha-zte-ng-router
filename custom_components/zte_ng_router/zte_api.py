@@ -728,6 +728,17 @@ class ZteRouterApi:
                 else:
                     return
 
+            # Discard the GoForm session so _async_goform_login() starts with a
+            # completely fresh cookie jar.  Stale cookies from a previous session
+            # prevent a successful re-login after a browser login has invalidated
+            # the old session.
+            if force and self._goform_session is not None:
+                try:
+                    await self._goform_session.close()
+                except Exception:
+                    pass
+                self._goform_session = None
+
             await self.async_init_session()
             await self.async_login()
 
@@ -840,10 +851,17 @@ class ZteRouterApi:
                     retry_on_connreset_104=False,
                 )
 
+            # Non-104 network error – mark session as stale so the next poll
+            # triggers a re-login (e.g. router sent HTML redirect after a browser
+            # login invalidated the HA session).
+            self._logged_in = False
+            self._session_id = None
             return {"success": False, "data": None}
 
         if not isinstance(res_list, list) or not res_list:
-            _LOGGER.warning("Invalid JSON from ubus")
+            _LOGGER.warning("Invalid JSON from ubus – marking session as stale for re-login")
+            self._logged_in = False
+            self._session_id = None
             return {"success": False, "data": None}
 
         res0 = res_list[0]
@@ -1032,10 +1050,17 @@ class ZteRouterApi:
                     retry_on_access_denied=retry_on_access_denied,
                 )
 
+            # Non-104 network error – mark session as stale so the next poll
+            # triggers a re-login (e.g. router sent HTML redirect after a browser
+            # login invalidated the HA session).
+            self._logged_in = False
+            self._session_id = None
             return [{"success": False, "data": None, "error": {"message": str(exc)}} for _ in calls]
 
         if not isinstance(res_list, list):
-            _LOGGER.warning("Invalid JSON from ubus batch")
+            _LOGGER.warning("Invalid JSON from ubus batch – marking session as stale for re-login")
+            self._logged_in = False
+            self._session_id = None
             return [{"success": False, "data": None, "error": {"message": "invalid_json"}} for _ in calls]
 
         # Prepare output list
@@ -1083,6 +1108,22 @@ class ZteRouterApi:
                 ", ".join(failed),
             )
     
+    def invalidate_session(self) -> None:
+        """Mark the current session as invalid to force a re-login on the next request.
+
+        Call this whenever an external action (e.g. browser login, pause-polling end)
+        may have invalidated the router session so that the next coordinator refresh
+        will always perform a fresh login instead of reusing stale credentials.
+        For GoForm mode the dedicated session is also discarded so that a fresh
+        cookie jar is used on the next login attempt.
+        """
+        self._logged_in = False
+        self._session_id = None
+        # GoForm: schedule session teardown (fire-and-forget; no await here
+        # because this is a sync method called from sync context).
+        # The session will be lazily recreated by _async_get_goform_session().
+        self._goform_session = None
+
     def build_ubus_call(
         self,
         service: str,
